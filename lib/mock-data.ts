@@ -1,4 +1,8 @@
-export type Role = 'Admin' | 'Section Controller' | 'Maintenance Engineer' | 'Viewer'
+/**
+ * A role is a plain string so admins can define new roles at runtime.
+ * The built-in roles are listed in `DEFAULT_ROLES` (see lib/roles.tsx).
+ */
+export type Role = string
 
 export type BarType = 'train' | 'approved' | 'pending' | 'conflict'
 
@@ -150,7 +154,7 @@ export const USERS: ManagedUser[] = [
   { id: 'u2', name: 'Sunita Nair', email: 's.nair@ir.gov.in', role: 'Section Controller', sections: ['Delhi–Agra Section'], status: 'Active' },
   { id: 'u3', name: 'Kartik Raman', email: 'k.raman@ir.gov.in', role: 'Maintenance Engineer', sections: ['Chennai–Bengaluru Section'], status: 'Active' },
   { id: 'u4', name: 'Vikram Sharma', email: 'v.sharma@ir.gov.in', role: 'Maintenance Engineer', sections: ['Lucknow–Kanpur Section'], status: 'Pending' },
-  { id: 'u5', name: 'Priya Ghosh', email: 'p.ghosh@ir.gov.in', role: 'Viewer', sections: ['Howrah–Bardhaman Section'], status: 'Active' },
+  { id: 'u5', name: 'Priya Ghosh', email: 'p.ghosh@ir.gov.in', role: 'Section Controller', sections: ['Howrah–Bardhaman Section'], status: 'Active' },
   { id: 'u6', name: 'Manoj Patel', email: 'm.patel@ir.gov.in', role: 'Section Controller', sections: ['Ahmedabad–Vadodara Section'], status: 'Revoked' },
 ]
 
@@ -158,7 +162,7 @@ export const AUDIT_LOG: AuditEntry[] = [
   { id: 'a1', timestamp: '11 Sep 2026, 09:42', user: 'Arjun Mehta', action: 'Overrode Block BR-2041', note: 'Manual approval — urgent OHE fault reported by field staff.' },
   { id: 'a2', timestamp: '11 Sep 2026, 08:15', user: 'Sunita Nair', action: 'Rejected Block BR-2038', note: 'Clashes with Rajdhani path; requested reschedule.' },
   { id: 'a3', timestamp: '11 Sep 2026, 07:03', user: 'System (AI Planner)', action: 'Generated optimal plan', note: 'Punctuality 60 / Throughput 30 / Cost 10.' },
-  { id: 'a4', timestamp: '10 Sep 2026, 22:48', user: 'Arjun Mehta', action: 'Changed role: V. Sharma', note: 'Viewer → Maintenance Engineer.' },
+  { id: 'a4', timestamp: '10 Sep 2026, 22:48', user: 'Arjun Mehta', action: 'Changed role: V. Sharma', note: 'Section Controller → Maintenance Engineer.' },
   { id: 'a5', timestamp: '10 Sep 2026, 19:20', user: 'Kartik Raman', action: 'Submitted Block BR-2044', note: 'Signal cable replacement, marked high urgency.' },
 ]
 
