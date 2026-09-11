@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'RailBlock — AI Block Planning System',
+  title: 'RailMind — AI Block Planning System',
   description:
     'AI-powered automatic block planning for Indian Railways — schedule track maintenance alongside train operations to maximize asset availability.',
   generator: 'v0.app',

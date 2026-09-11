@@ -45,7 +45,7 @@ export function AppSidebar({
               <TrainFront className="size-4.5" />
             </div>
             <div className="leading-tight">
-              <p className="text-sm font-semibold text-white">RailBlock</p>
+              <p className="text-sm font-semibold text-white">RailMind</p>
               <p className="text-[10px] uppercase tracking-wider text-sidebar-foreground/60">
                 Block Planning
               </p>

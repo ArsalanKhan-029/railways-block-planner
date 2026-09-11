@@ -34,7 +34,7 @@ export function LoginScreen({ onLogin }: { onLogin: (role: Role, email: string) 
           <div className="flex size-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
             <TrainFront className="size-5" />
           </div>
-          <span className="text-lg font-semibold tracking-tight text-white">RailBlock</span>
+          <span className="text-lg font-semibold tracking-tight text-white">RailMind</span>
         </div>
 
         <div className="max-w-md">
@@ -46,7 +46,7 @@ export function LoginScreen({ onLogin }: { onLogin: (role: Role, email: string) 
             Schedule maintenance without stopping the trains.
           </h1>
           <p className="mt-4 text-sm leading-relaxed text-sidebar-foreground/80">
-            RailBlock optimises track maintenance windows against live train
+            RailMind optimises track maintenance windows against live train
             schedules across Indian Railways sections — maximising asset
             availability while protecting punctuality.
           </p>
@@ -77,7 +77,7 @@ export function LoginScreen({ onLogin }: { onLogin: (role: Role, email: string) 
             <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <TrainFront className="size-5" />
             </div>
-            <span className="text-lg font-semibold tracking-tight">RailBlock</span>
+            <span className="text-lg font-semibold tracking-tight">RailMind</span>
           </div>
 
           <h2 className="text-2xl font-semibold tracking-tight">Sign in</h2>
