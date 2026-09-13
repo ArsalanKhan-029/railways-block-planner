@@ -1,12 +1,14 @@
 /**
  * RailAI — schedule time suggestion for a train service.
  *
- * POST { sectionCode, priority, frequency, trains?: [...], blocks?: [...] }
- * → { departure, arrival, rationale, provider }  (times "HH:MM")
+ * POST { sectionCode, priority, frequency, distanceKm?, trains?, blocks? }
+ * → { departure, arrival, rationale, expectedDurationMinutes, provider }
  *
- * Uses Groq (text model) to reason over the section's existing traffic and
- * block windows and propose a departure/arrival pair that avoids conflicts.
- * Falls back to a deterministic heuristic when no key is configured.
+ * The journey duration is MATH, not AI opinion: distance ÷ priority-specific
+ * effective speed (see lib/journey.ts), within the ±10 min tolerance. Groq
+ * only chooses the *departure* inside the traffic-free window; the arrival is
+ * then locked to departure + expected duration. Falls back to a deterministic
+ * heuristic when no key is configured.
  */
 
 export const runtime = 'nodejs'
@@ -30,44 +32,47 @@ const PRIORITY_WINDOWS: Record<string, [string, string]> = {
   passenger: ['05:00', '23:00'],
   freight: ['22:00', '05:00'],
 }
+const SPEED: Record<string, number> = { express: 65, mail: 55, passenger: 45, freight: 40 }
 
-function heuristic(sectionCode: string, priority: string, trains: SnapTrain[], blocks: SnapBlock[]) {
-  const [lo, hi] = PRIORITY_WINDOWS[priority] ?? PRIORITY_WINDOWS.express
-  const toMin = (t: string) => {
-    const [h, m] = t.split(':').map(Number)
-    return (h % 24) * 60 + (m || 0)
-  }
-  const fmt = (mins: number) => {
-    const m = ((mins % 1440) + 1440) % 1440
-    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
-  }
-  const loM = toMin(lo)
-  let dep = loM
-  const span = priority === 'freight' ? 8 * 60 : 9 * 60
-  // nudge departure past any same-section train that starts within an hour
+function toMin(t: string): number {
+  const [h, m] = t.split(':').map(Number)
+  return (h % 24) * 60 + (m || 0)
+}
+function fmt(mins: number): string {
+  const m = ((mins % 1440) + 1440) % 1440
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+}
+/** Distance-based duration; falls back to a 9h default without a distance. */
+export function expectedDurationMinutes(distanceKm: number | null, priority: string): number {
+  if (!distanceKm || distanceKm <= 0) return 540
+  const speed = SPEED[priority] ?? SPEED.express
+  return Math.max(60, Math.round((distanceKm / speed) * 60))
+}
+
+function heuristic(sectionCode: string, priority: string, duration: number, trains: SnapTrain[], blocks: SnapBlock[]) {
+  const [lo] = PRIORITY_WINDOWS[priority] ?? PRIORITY_WINDOWS.express
+  let dep = toMin(lo)
   for (let i = 0; i < 12; i++) {
-    const clash = trains.some((t) => {
-      const s = toMin(t.start)
-      return Math.abs(s - dep) < 75
-    })
+    const clash = trains.some((t) => Math.abs(toMin(t.start) - dep) < 75)
     const blockHit = blocks.some((b) => {
       const bs = toMin(b.start.slice(11, 16) || b.start)
       const be = toMin(b.end.slice(11, 16) || b.end)
-      return dep < be && dep + span > bs
+      return dep < be && dep + duration > bs
     })
     if (!clash && !blockHit) break
     dep += 55
   }
   return {
     departure: fmt(dep),
-    arrival: fmt(dep + span),
-    rationale: `Departure placed inside the ${lo}–${hi} window preferred for ${priority} services on ${sectionCode}, shifted clear of ${trains.length} existing service(s) and ${blocks.length} block window(s) on this section.`,
+    arrival: fmt(dep + duration),
+    rationale: `Departure at the start of the ${priority}-preferred window on ${sectionCode}, shifted clear of ${trains.length} existing service(s) and ${blocks.length} block window(s). Duration = distance ÷ ${SPEED[priority] ?? 65} km/h.`,
+    expectedDurationMinutes: duration,
     provider: 'heuristic' as const,
   }
 }
 
 export async function POST(req: Request) {
-  let body: { sectionCode?: string; priority?: string; frequency?: string; trains?: SnapTrain[]; blocks?: SnapBlock[] }
+  let body: { sectionCode?: string; priority?: string; frequency?: string; distanceKm?: number; trains?: SnapTrain[]; blocks?: SnapBlock[] }
   try {
     body = await req.json()
   } catch {
@@ -76,18 +81,22 @@ export async function POST(req: Request) {
   const sectionCode = String(body.sectionCode ?? '')
   const priority = String(body.priority ?? 'express')
   const frequency = String(body.frequency ?? 'daily')
+  const distanceKm = typeof body.distanceKm === 'number' && body.distanceKm > 0 ? body.distanceKm : null
   const trains = Array.isArray(body.trains) ? body.trains.slice(0, 40) : []
   const blocks = Array.isArray(body.blocks) ? body.blocks.slice(0, 20) : []
+
+  const duration = expectedDurationMinutes(distanceKm, priority)
 
   const key = process.env.GROQ_API_KEY
   if (key) {
     try {
       const prompt =
-        `You are RailAI, scheduling assistant for Indian Railways. Propose ONE departure and arrival time (IST, "HH:MM") for a NEW ${priority}-class train with ${frequency} frequency on section ${sectionCode}.\n` +
+        `You are RailAI, scheduling assistant for Indian Railways. Propose ONE departure time (IST, "HH:MM") for a NEW ${priority}-class train with ${frequency} frequency on section ${sectionCode}.\n` +
+        `HARD CONSTRAINT: the journey duration MUST be ${duration} minutes (distance-based). Do not propose an arrival — it will be computed from your departure.\n` +
         `Existing services on this section: ${JSON.stringify(trains)}\n` +
         `Block/maintenance windows: ${JSON.stringify(blocks)}\n` +
-        `Rules: avoid departing within 60 min of another service; avoid overlapping block windows; prefer daytime for passenger/express, overnight for mail/freight; journey duration 8-10 hours.\n` +
-        `Reply with STRICT JSON only: {"departure":"HH:MM","arrival":"HH:MM","rationale":"<one short sentence>"}`
+        `Rules: avoid departing within 60 min of another service; avoid overlapping block windows; prefer daytime for passenger/express, overnight for mail/freight.\n` +
+        `Reply with STRICT JSON only: {"departure":"HH:MM","rationale":"<one short sentence>"}`
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -104,11 +113,13 @@ export async function POST(req: Request) {
         const m = text.replace(/```(?:json)?/gi, '').match(/\{[\s\S]*\}/)
         if (m) {
           const parsed = JSON.parse(m[0])
-          if (/^\d{1,2}:\d{2}$/.test(parsed.departure ?? '') && /^\d{1,2}:\d{2}$/.test(parsed.arrival ?? '')) {
+          if (/^\d{1,2}:\d{2}$/.test(parsed.departure ?? '')) {
+            const dep = toMin(parsed.departure)
             return Response.json({
-              departure: parsed.departure.padStart(5, '0'),
-              arrival: parsed.arrival.padStart(5, '0'),
+              departure: fmt(dep),
+              arrival: fmt(dep + duration),
               rationale: String(parsed.rationale ?? '').slice(0, 300),
+              expectedDurationMinutes: duration,
               provider: 'groq',
             })
           }
@@ -121,5 +132,5 @@ export async function POST(req: Request) {
     }
   }
 
-  return Response.json(heuristic(sectionCode, priority, trains, blocks))
+  return Response.json(heuristic(sectionCode, priority, duration, trains, blocks))
 }

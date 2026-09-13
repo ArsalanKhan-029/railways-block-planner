@@ -13,7 +13,7 @@
  *    "Approve & Implement" (via the standard APIs → realtime propagation).
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Loader2, Sparkles, Check, X, Wrench, TrainFront, History, Pencil, Trash2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -23,8 +23,21 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { useRailData } from '@/lib/use-rail-data'
 import { insertTrain, insertBlock, setSectionConflict } from '@/lib/api'
+import { railDistanceKm, durationMinutes, round5, addMinutesToTime } from '@/lib/journey'
 import type { TrainPriority, TrainFrequency } from '@/lib/types'
 import { cn } from '@/lib/utils'
+
+/** Distance-based expected duration (min) for a section+priority; null when
+ * the section's endpoints lack coordinates. */
+function expectedFor(
+  distances: Map<string, number>,
+  sectionCode: string | undefined,
+  priority: string,
+): number | null {
+  const km = sectionCode ? distances.get(sectionCode) : undefined
+  if (!km) return null
+  return round5(durationMinutes(km, priority))
+}
 
 const PRIORITIES: { value: TrainPriority; label: string }[] = [
   { value: 'express', label: 'Express' },
@@ -81,7 +94,20 @@ function useConflictPrecheck(sectionId: string, dep: string, arr: string, editin
 }
 
 export function ScheduleView() {
-  const { sections, trains, blocks, assets, refresh } = useRailData()
+  const { sections, trains, blocks, assets, stations, refresh } = useRailData()
+
+  // rail distance (km) per section from endpoint station coordinates
+  const distances = useMemo(() => {
+    const byCode = new Map(stations.map((s) => [s.code, s]))
+    const out = new Map<string, number>()
+    for (const sec of sections) {
+      const a = sec.from_station ? byCode.get(sec.from_station) : null
+      const b = sec.to_station ? byCode.get(sec.to_station) : null
+      if (!a || !b) continue
+      out.set(sec.code, railDistanceKm(a, b))
+    }
+    return out
+  }, [sections, stations])
   const [tab, setTab] = useState<'service' | 'maintenance' | 'plan'>('service')
 
   return (
@@ -100,7 +126,7 @@ export function ScheduleView() {
         ))}
       </div>
 
-      {tab === 'service' && <TrainServiceTab sections={sections} trains={trains} assets={assets} blocks={blocks} refresh={refresh} />}
+      {tab === 'service' && <TrainServiceTab sections={sections} trains={trains} assets={assets} blocks={blocks} distances={distances} refresh={refresh} />}
       {tab === 'maintenance' && <MaintenanceTab sections={sections} refresh={refresh} />}
       {tab === 'plan' && <PlanTab sections={sections} trains={trains} blocks={blocks} refresh={refresh} />}
     </div>
@@ -114,12 +140,14 @@ function TrainServiceTab({
   trains,
   assets,
   blocks,
+  distances,
   refresh,
 }: {
-  sections: { id: string; code: string; name: string }[]
+  sections: { id: string; code: string; name: string; from_station?: string | null; to_station?: string | null }[]
   trains: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string; status: string }[]
   assets: { id: string; asset_code: string; name: string; asset_type: string; train_id?: string | null }[]
   blocks: { section_id: string; title: string; status: string; start_time: string; end_time: string }[]
+  distances: Map<string, number>
   refresh: () => void
 }) {
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -134,6 +162,7 @@ function TrainServiceTab({
             trains={trains}
             assets={assets}
             blocks={blocks}
+            distances={distances}
             editing={edit}
             onDone={() => {
               setEditingId(null)
@@ -188,13 +217,15 @@ function TrainServiceForm({
   trains,
   assets,
   blocks,
+  distances,
   editing,
   onDone,
 }: {
-  sections: { id: string; code: string; name: string }[]
+  sections: { id: string; code: string; name: string; from_station?: string | null; to_station?: string | null }[]
   trains: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string }[]
   assets: { id: string; asset_code: string; name: string; asset_type: string; train_id?: string | null }[]
   blocks: { section_id: string; title: string; status: string; start_time: string; end_time: string }[]
+  distances: Map<string, number>
   editing: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string } | null
   onDone: () => void
 }) {
@@ -213,6 +244,14 @@ function TrainServiceForm({
   // vehicle-type assets with no linked train can be promoted by this form
   const unlinkedVehicles = assets.filter((a) => a.asset_type === 'vehicle' && !a.train_id)
 
+  // distance-based expected duration; arrival auto-follows departure so the
+  // journey time always matches distance ÷ priority speed (±10 min tolerance)
+  const expected = expectedFor(distances, section?.code, priority)
+  const expectedKm = section ? distances.get(section.code) : undefined
+  useEffect(() => {
+    if (expected != null) setArr(addMinutesToTime(dep, expected))
+  }, [dep, expected])
+
   async function askAi() {
     if (!section) return
     setSuggesting(true)
@@ -229,7 +268,14 @@ function TrainServiceForm({
       const res = await fetch('/api/railai/suggest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sectionCode: section.code, priority, frequency, trains: secTrains, blocks: secBlocks }),
+        body: JSON.stringify({
+          sectionCode: section.code,
+          priority,
+          frequency,
+          distanceKm: expectedKm,
+          trains: secTrains,
+          blocks: secBlocks,
+        }),
       })
       const json = await res.json()
       setSuggest(json)
@@ -332,8 +378,20 @@ function TrainServiceForm({
         </div>
         <div className="mt-2 grid grid-cols-2 gap-3">
           <Input type="time" value={dep} onChange={(e) => setDep(e.target.value)} aria-label="Departure time" required />
-          <Input type="time" value={arr} onChange={(e) => setArr(e.target.value)} aria-label="Arrival time" required />
+          <Input
+            type="time"
+            value={arr}
+            onChange={(e) => setArr(e.target.value)}
+            aria-label="Arrival time (auto from distance)"
+            title={expected != null ? `Auto-calculated: ${expectedKm?.toFixed(0)} km ÷ ${priority} speed ≈ ${expected} min (edit to override)` : 'Pick endpoint stations with coordinates to auto-calculate'}
+            required
+          />
         </div>
+        {expected != null && (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            ≈ {expectedKm?.toFixed(0)} km · expected duration <span className="font-mono">{expected} min</span> at {priority} speed — arrival auto-set from departure (±10 min), editable.
+          </p>
+        )}
         {suggest && (
           <p className="mt-2 text-xs text-muted-foreground">
             <Badge variant="info" className="mr-1.5">
