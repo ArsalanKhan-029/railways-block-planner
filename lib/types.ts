@@ -53,7 +53,8 @@ export interface TrainRow extends DemoFlag {
   status: TrainStatus
   priority?: TrainPriority
   frequency?: TrainFrequency
-  /** Ordered station-code route with real schedule times (jsonb). */
+  /** How many trips this service makes per day (each trip = its own timetable entry). */
+  trips_per_day?: number
   route?: TrainRoute | null
   distance_km?: number | null
   created_at: string

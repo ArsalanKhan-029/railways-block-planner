@@ -499,10 +499,62 @@ export interface NewTrainInput {
   status?: TrainRow['status']
   priority?: TrainRow['priority']
   frequency?: TrainRow['frequency']
+  /** Trips per day — when > 1, N staggered entries are created (see insertTrainMultiTrip). */
+  trips_per_day?: number
 }
 
 export function insertTrain(input: NewTrainInput) {
   return supabase.from('trains').insert({ ...input, activity: 'running' })
+}
+
+/**
+ * Trips-per-day scheduling: one logical service can run several round trips
+ * a day. Each trip becomes its own timetable row (that's how the timeline,
+ * map and search already read schedules), staggered evenly across the day:
+ * gap = (1440 − one-way duration) / (N − 1) between consecutive departures.
+ * The first trip uses the given times verbatim; later trips keep the same
+ * duration, shifted by the gap. Numbers ≥ 1000 get "-2", "-3" suffixes.
+ */
+export async function insertTrainMultiTrip(input: NewTrainInput): Promise<{ error: { message: string } | null; count: number }> {
+  const n = Math.max(1, Math.min(20, Math.round(input.trips_per_day ?? 1)))
+  if (n === 1) {
+    const { error } = await insertTrain(input)
+    return { error, count: 1 }
+  }
+
+  const toMin = (t: string) => {
+    const [h, m] = t.split(':').map((v) => Math.round(Number(v) || 0))
+    return (h || 0) * 60 + (m || 0)
+  }
+  const toHHMMSS = (min: number) => {
+    const m = ((Math.round(min) % 1440) + 1440) % 1440
+    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:00`
+  }
+
+  const dep = toMin(input.start_time)
+  const arr = toMin(input.end_time)
+  // One-way duration; if arrival is past midnight (e.g. 22:00 → 02:00) wrap it.
+  const duration = arr >= dep ? arr - dep : arr + 1440 - dep
+  const gap = (1440 - duration) / (n - 1)
+
+  const rows = Array.from({ length: n }, (_, i) => ({
+    section_id: input.section_id,
+    train_number: i === 0 ? input.train_number : `${input.train_number}-${i + 1}`,
+    name: i === 0 ? input.name : `${input.name} (Trip ${i + 1})`,
+    start_time: toHHMMSS(dep + gap * i),
+    end_time: toHHMMSS(dep + gap * i + duration),
+    // NOTE: bulk inserts go out as CSV — every required column must carry an
+    // explicit value, because omitted cells become NULL (not the DB default).
+    train_type: input.train_type ?? 'Express',
+    status: input.status ?? ('scheduled' as const),
+    priority: input.priority ?? 'express',
+    frequency: input.frequency ?? 'daily',
+    trips_per_day: n,
+    activity: 'running',
+  }))
+
+  const { error } = await supabase.from('trains').insert(rows)
+  return { error, count: n }
 }
 
 /**

@@ -54,9 +54,10 @@ export function round5(minutes: number): number {
 
 /** "06:00" + 585 min → "15:45" (wraps past midnight). */
 export function addMinutesToTime(hhmm: string, minutes: number): string {
-  const m = hhmm.match(/^(\d{1,2}):(\d{2})$/)
+  const m = hhmm.match(/^(\d{1,2}):(\d{2})(\.\d+)?$/)
   if (!m) return hhmm
-  const total = (Number(m[1]) * 60 + Number(m[2]) + minutes) % 1440
+  // Round fractional minutes (e.g. from km/h math) so times stay valid HH:MM.
+  const total = Math.round(Number(m[1]) * 60 + Number(m[2]) + minutes) % 1440
   const wrapped = (total + 1440) % 1440
   return `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`
 }

@@ -22,7 +22,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { useRailData } from '@/lib/use-rail-data'
-import { insertTrain, insertBlock, setSectionConflict } from '@/lib/api'
+import { insertTrain, insertTrainMultiTrip, insertBlock, setSectionConflict } from '@/lib/api'
 import { railDistanceKm, durationMinutes, round5, addMinutesToTime } from '@/lib/journey'
 import type { TrainPriority, TrainFrequency } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -144,7 +144,7 @@ function TrainServiceTab({
   refresh,
 }: {
   sections: { id: string; code: string; name: string; from_station?: string | null; to_station?: string | null }[]
-  trains: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string; status: string }[]
+  trains: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string; trips_per_day?: number; status: string }[]
   assets: { id: string; asset_code: string; name: string; asset_type: string; train_id?: string | null }[]
   blocks: { section_id: string; title: string; status: string; start_time: string; end_time: string }[]
   distances: Map<string, number>
@@ -188,17 +188,21 @@ function TrainServiceTab({
               <tbody className="divide-y divide-border">
                 {trains.map((t) => {
                   const sec = sections.find((s) => s.id === t.section_id)
+                  const trips = t.trips_per_day ?? 1
                   return (
                     <tr
                       key={t.id}
                       className={cn('cursor-pointer hover:bg-muted/40', editingId === t.id && 'bg-primary/5')}
                       onClick={() => setEditingId(t.id)}
                     >
-                      <td className="px-4 py-2.5 font-mono text-xs">{t.train_number}</td>
+                      <td className="px-4 py-2.5 font-mono text-xs">
+                        {t.train_number}
+                        {trips > 1 && <span className="ml-1.5 text-[10px] text-muted-foreground">trip {String(t.train_number).endsWith(`-${trips}`) ? trips : '…'}</span>}
+                      </td>
                       <td className="max-w-[180px] truncate px-3 py-2.5 font-medium">{t.name}</td>
                       <td className="px-3 py-2.5 text-xs text-muted-foreground">{sec?.code ?? '—'}</td>
                       <td className="px-3 py-2.5 text-xs capitalize">{t.priority ?? 'express'}</td>
-                      <td className="px-3 py-2.5 text-xs capitalize">{t.frequency ?? 'daily'}</td>
+                      <td className="px-3 py-2.5 text-xs capitalize">{t.frequency ?? 'daily'}{trips > 1 ? ` · ${trips}×/day` : ''}</td>
                       <td className="px-4 py-2.5 font-mono text-xs">{t.start_time.slice(0, 5)}–{t.end_time.slice(0, 5)}</td>
                     </tr>
                   )
@@ -222,16 +226,17 @@ function TrainServiceForm({
   onDone,
 }: {
   sections: { id: string; code: string; name: string; from_station?: string | null; to_station?: string | null }[]
-  trains: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string }[]
+  trains: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string; trips_per_day?: number }[]
   assets: { id: string; asset_code: string; name: string; asset_type: string; train_id?: string | null }[]
   blocks: { section_id: string; title: string; status: string; start_time: string; end_time: string }[]
   distances: Map<string, number>
-  editing: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string } | null
+  editing: { id: string; section_id: string; train_number: string; name: string; start_time: string; end_time: string; priority?: string; frequency?: string; trips_per_day?: number } | null
   onDone: () => void
 }) {
   const [sectionId, setSectionId] = useState(editing?.section_id ?? sections[0]?.id ?? '')
   const [priority, setPriority] = useState<TrainPriority>((editing?.priority as TrainPriority) ?? 'express')
   const [frequency, setFrequency] = useState<TrainFrequency>((editing?.frequency as TrainFrequency) ?? 'daily')
+  const [trips, setTrips] = useState(editing?.trips_per_day ?? 1)
   const [dep, setDep] = useState(editing?.start_time.slice(0, 5) ?? '06:00')
   const [arr, setArr] = useState(editing?.end_time.slice(0, 5) ?? '15:00')
   const [saving, setSaving] = useState(false)
@@ -306,13 +311,14 @@ function TrainServiceForm({
         end_time: `${arr}:00`,
         priority,
         frequency,
+        trips_per_day: trips,
       })
       setSaving(false)
       if (error) setError(error.message)
       else onDone()
       return
     }
-    const { error } = await insertTrain({
+    const { error, count } = await insertTrainMultiTrip({
       section_id: sectionId,
       train_number: number,
       name,
@@ -320,7 +326,12 @@ function TrainServiceForm({
       end_time: `${arr}:00`,
       priority,
       frequency,
+      trips_per_day: trips,
     })
+    if (count > 1) {
+      // Toast via existing pattern: the parent list refetches live anyway.
+      setError(null)
+    }
     setSaving(false)
     if (error) setError(error.message)
     else onDone()
@@ -368,6 +379,26 @@ function TrainServiceForm({
             ))}
           </Select>
         </div>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="ts-trips">Trips per day</Label>
+        <Select id="ts-trips" value={String(trips)} onChange={(e) => setTrips(Number(e.target.value))} disabled={!!editing}>
+          {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
+            <option key={n} value={n}>
+              {n} {n === 1 ? 'trip' : 'trips'} per day
+            </option>
+          ))}
+        </Select>
+        {trips > 1 && !editing && (
+          <p className="text-xs text-muted-foreground">
+            Creates {trips} timetable entries: first departs {dep || '—'}, same duration, then evenly staggered across the day (numbered {`${'…'}-2, -3${'…'}`} in the list).
+          </p>
+        )}
+        {editing && editing.trips_per_day != null && editing.trips_per_day > 1 && (
+          <p className="text-xs text-muted-foreground">
+            This service runs {editing.trips_per_day} trips/day ({editing.trips_per_day - 1} sibling entries share its number). Editing here changes this trip only.
+          </p>
+        )}
       </div>
       <div className="rounded-lg border border-border p-3">
         <div className="flex items-center justify-between">
