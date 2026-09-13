@@ -4,7 +4,7 @@
  * POST { messages: [{role, content}], snapshot?: RailSnapshot, view?: string }
  * → { reply: string, provider: 'groq' | 'gemini' | 'offline' }
  *
- * Provider priority: Groq (llama-3.3-70b-versatile, generous free tier) →
+ * Provider priority: Groq (openai/gpt-oss-120b, generous free tier) →
  * Google Gemini (gemini-2.0-flash) → a graceful offline reply. The key never
  * reaches the browser; the widget only posts a compact data snapshot plus the
  * chat transcript.
@@ -124,10 +124,12 @@ async function askGroq(system: string, messages: ChatMsg[]): Promise<string | nu
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+        model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
         messages: [{ role: 'system', content: system }, ...messages],
         temperature: 0.3,
-        max_tokens: 700,
+        // gpt-oss emits hidden reasoning tokens that count against this
+        // budget — keep generous headroom above the visible-answer cap.
+        max_tokens: 2000,
       }),
     })
     if (!res.ok) {
