@@ -9,7 +9,7 @@ import type { RailSnapshot } from '@/app/api/railai/route'
 import { cn } from '@/lib/utils'
 
 /**
- * RailAI — persistent floating assistant (bottom-left) available on every
+ * RailAI — persistent floating assistant (bottom-right) available on every
  * page. Sends the chat transcript plus a compact snapshot of live app data
  * to /api/railai (Groq → Gemini → offline), so answers reflect what the user
  * is actually looking at.
@@ -149,7 +149,7 @@ export function RailAIWidget() {
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          'fixed bottom-5 left-5 z-[90] flex size-12 items-center justify-center rounded-full shadow-lg transition-transform hover:scale-105',
+          'fixed bottom-5 right-5 z-[90] flex size-12 items-center justify-center rounded-full shadow-lg transition-transform hover:scale-105',
           open ? 'bg-muted text-foreground' : 'bg-primary text-primary-foreground',
         )}
         aria-label={open ? 'Close RailAI assistant' : 'Open RailAI assistant'}
@@ -159,7 +159,7 @@ export function RailAIWidget() {
       </button>
 
       {open && (
-        <div className="fixed bottom-20 left-5 z-[90] flex h-[480px] w-[360px] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-2xl border border-border bg-popover shadow-2xl">
+        <div className="fixed bottom-20 right-5 z-[90] flex h-[480px] w-[360px] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-2xl border border-border bg-popover shadow-2xl">
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <span className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Sparkles className="size-4" />
