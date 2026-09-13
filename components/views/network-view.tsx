@@ -70,9 +70,36 @@ interface TrainPos {
  * route stop times. Finds the segment between the two nearest stations the
  * train is between at that moment.
  */
-function positionAt(tr: TrainRow, stationsByCode: Map<string, StationRow>, nowH: number): TrainPos | null {
+function positionAt(
+  tr: TrainRow,
+  stationsByCode: Map<string, StationRow>,
+  nowH: number,
+  sectionEndpoints?: { from: StationRow | null; to: StationRow | null },
+): TrainPos | null {
   const route = tr.route
-  if (!route || !route.c || route.c.length < 2) return null
+  // manually scheduled trains have no per-stop route jsonb — fall back to the
+  // section's two endpoint stations so they still render on the map
+  if (!route || !route.c || route.c.length < 2) {
+    const f = sectionEndpoints?.from
+    const t2 = sectionEndpoints?.to
+    if (!f || !t2) return null
+    const startH = h(tr.start_time)
+    const endH = h(tr.end_time)
+    if (nowH < startH || nowH > endH) return null
+    const span = Math.max(0.25, endH - startH)
+    const t = Math.min(1, Math.max(0, (nowH - startH) / span))
+    return {
+      train: tr,
+      from: f,
+      to: t2,
+      t,
+      running: true,
+      scheduledDeparture: tr.start_time.slice(0, 5),
+      scheduledArrival: tr.end_time.slice(0, 5),
+      segmentIndex: 0,
+      routeCodes: [f.code, t2.code],
+    }
+  }
   const codes = route.c
   const arr = route.a
   const dep = route.d
@@ -312,16 +339,25 @@ export function NetworkView() {
     return out
   }, [complaints, sectionById, projected])
 
-  // train positions at activeH
+  // train positions at activeH — trains without a route jsonb fall back to
+  // their section's two endpoint stations so manually scheduled services render
   const trainPositions = useMemo(() => {
     if (!trains.length || !stationsByCode.size) return []
     const out: TrainPos[] = []
     for (const tr of trains) {
-      const p = positionAt(tr, stationsByCode, activeH)
+      let endpoints: { from: StationRow | null; to: StationRow | null } | undefined
+      if (!tr.route || !tr.route.c || tr.route.c.length < 2) {
+        const sec = sectionById.get(tr.section_id)
+        endpoints = {
+          from: sec?.from_station ? stationsByCode.get(sec.from_station) ?? null : null,
+          to: sec?.to_station ? stationsByCode.get(sec.to_station) ?? null : null,
+        }
+      }
+      const p = positionAt(tr, stationsByCode, activeH, endpoints)
       if (p) out.push(p)
     }
     return out
-  }, [trains, stationsByCode, activeH])
+  }, [trains, stationsByCode, activeH, sectionById])
 
   // deep-link intents from search / conflict center
   useEffect(() => {
