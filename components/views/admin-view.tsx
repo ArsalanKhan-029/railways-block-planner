@@ -54,10 +54,13 @@ function toDbRole(displayName: string): string {
       return 'section_controller'
     case 'Maintenance Engineer':
       return 'maintenance_engineer'
+    case 'Driver':
+      return 'driver'
     case 'Viewer':
       return 'viewer'
     default:
-      return displayName
+      // normalize arbitrary/case-variant inputs to the canonical snake_case set
+      return displayName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
   }
 }
 

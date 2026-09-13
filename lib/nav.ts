@@ -18,6 +18,7 @@ export type ViewId =
   | 'planning'
   | 'network'
   | 'assets'
+  | 'schedule'
   | 'report'
   | 'analytics'
   | 'admin'
@@ -46,6 +47,7 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { id: 'network', label: 'Network View', icon: Waypoints, roles: ALL },
   { id: 'assets', label: 'Asset Registry', icon: Boxes, roles: ALL },
+  { id: 'schedule', label: 'Schedule', icon: CalendarClock, roles: ['Admin'] },
   { id: 'report', label: 'Report Issue', icon: TriangleAlert, roles: ALL },
   { id: 'analytics', label: 'Analytics', icon: BarChart3, roles: ['Admin', 'Viewer'] },
   { id: 'admin', label: 'User Management', icon: Users, roles: ['Admin'] },

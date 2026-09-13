@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import {
   Boxes,
+  CalendarPlus,
   Plus,
   X,
   Loader2,
@@ -21,7 +22,111 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { ConfirmDelete } from '@/components/confirm-delete'
 import { useAuth } from '@/lib/auth'
+
+/** Schedule a vehicle asset as a train service — creates the trains row and
+ * links it back to the asset so both views stay in sync. */
+function ScheduleVehicleModal({
+  asset,
+  onClose,
+  onDone,
+}: {
+  asset: AssetRow
+  onClose: () => void
+  onDone: () => void
+}) {
+  const { sections } = useRailData()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    const fd = new FormData(e.currentTarget)
+    const sectionId = String(fd.get('section') || '')
+    const number = String(fd.get('number') || '').trim()
+    const name = String(fd.get('name') || '').trim()
+    const start = String(fd.get('start') || '06:00')
+    const end = String(fd.get('end') || '18:00')
+    if (!sectionId || !number || !name) return
+    setSaving(true)
+    setError(null)
+    const { error: err } = await createTrainForAsset({
+      asset_id: asset.id,
+      section_id: sectionId,
+      train_number: number,
+      name,
+      start_time: `${start}:00`,
+      end_time: `${end}:00`,
+    })
+    setSaving(false)
+    if (err) {
+      setError(err.message)
+      return
+    }
+    onDone()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-[1px]" onClick={onClose} />
+      <div className="relative w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <h3 className="text-sm font-semibold">Schedule “{asset.name}” as a train</h3>
+          <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-muted-foreground hover:bg-muted">
+            <X className="size-4" />
+          </button>
+        </div>
+        <form onSubmit={submit} className="space-y-3 p-5">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="sv-section">Section / route</Label>
+            <Select id="sv-section" name="section" defaultValue={asset.section_id ?? ''} required>
+              {sections.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.code} — {s.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="sv-number">Train number</Label>
+              <Input id="sv-number" name="number" placeholder="e.g. 12345" defaultValue={asset.asset_code} required />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="sv-name">Service name</Label>
+              <Input id="sv-name" name="name" placeholder="e.g. Rail Express" defaultValue={asset.name} required />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="sv-start">Start time</Label>
+              <Input id="sv-start" name="start" type="time" defaultValue="06:00" required />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="sv-end">End time</Label>
+              <Input id="sv-end" name="end" type="time" defaultValue="18:00" required />
+            </div>
+          </div>
+          {error && <p className="text-xs text-conflict">{error}</p>}
+          <p className="text-xs text-muted-foreground">
+            Creates a scheduled service on the Section Timeline and Network View, and links this vehicle to it.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={saving}>
+              {saving && <Loader2 className="animate-spin" />}
+              Schedule service
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
 import {
+  createTrainForAsset,
+  createTrainForVehicleAsset,
   deleteAsset,
   insertAsset,
   updateAsset,
@@ -94,12 +199,37 @@ function AssetForm({
 
     setSaving(true)
     setError(null)
-    const { error: err } = initial
-      ? await updateAsset(initial.id, input)
-      : await insertAsset(input)
+    if (initial) {
+      const { error: err } = await updateAsset(initial.id, input)
+      setSaving(false)
+      if (err) {
+        setError(err.message)
+        return
+      }
+      onDone()
+      return
+    }
+    // New vehicle assets immediately become trains: insert the asset, then
+    // auto-create a timetable entry linked to it so the asset is schedulable
+    // everywhere (driver assignment, Schedule, Network View, search).
+    if (!initial && input.asset_type === 'vehicle' && !sectionId) {
+      setSaving(false)
+      setError('Vehicles need a section/route so they can be scheduled as trains — pick one.')
+      return
+    }
+    const { data: createdId, error: err2 } = await insertAsset(input)
+    if (!err2 && input.asset_type === 'vehicle' && createdId) {
+      const { error: trainErr } = await createTrainForVehicleAsset({
+        asset_id: createdId.id,
+        section_id: sectionId,
+        train_number: input.asset_code,
+        name: input.name,
+      })
+      if (trainErr) setError(`Asset saved, but auto-scheduling failed: ${trainErr.message}`)
+    }
     setSaving(false)
-    if (err) {
-      setError(err.message)
+    if (err2) {
+      setError(err2.message)
       return
     }
     onDone()
@@ -194,6 +324,7 @@ export function AssetRegistryView() {
   const [statusFilter, setStatusFilter] = useState<'all' | AssetStatus>('all')
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<AssetRow | null>(null)
+  const [scheduling, setScheduling] = useState<AssetRow | null>(null)
   const [pendingDelete, setPendingDelete] = useState<AssetRow | null>(null)
 
   const filtered = useMemo(() => {
@@ -414,6 +545,18 @@ export function AssetRegistryView() {
                       </td>
                       <td className="px-5 py-3">
                         <div className="flex justify-end gap-1">
+                          {a.asset_type === 'vehicle' && !a.train_id && (
+                            <button
+                              type="button"
+                              onClick={canManage ? () => setScheduling(a) : undefined}
+                              disabled={!canManage}
+                              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              aria-label={`Schedule ${a.name} as a train`}
+                              title="Schedule this vehicle as a train service"
+                            >
+                              <CalendarPlus className="size-4" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={canManage ? () => setEditing(a) : undefined}
@@ -451,6 +594,18 @@ export function AssetRegistryView() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Schedule-vehicle-as-train modal */}
+      {scheduling && (
+        <ScheduleVehicleModal
+          asset={scheduling}
+          onClose={() => setScheduling(null)}
+          onDone={() => {
+            setScheduling(null)
+            refresh()
+          }}
+        />
+      )}
 
       {/* Edit modal */}
       {editing && (

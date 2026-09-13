@@ -497,10 +497,51 @@ export interface NewTrainInput {
   end_time: string
   train_type?: string
   status?: TrainRow['status']
+  priority?: TrainRow['priority']
+  frequency?: TrainRow['frequency']
 }
 
 export function insertTrain(input: NewTrainInput) {
   return supabase.from('trains').insert({ ...input, activity: 'running' })
+}
+
+/**
+ * Vehicle-asset → train unification (Step 1): registering a vehicle-type
+ * asset immediately gives it a timetable entry so it is a first-class train
+ * everywhere — driver assignment, Schedule section, Network View, search.
+ * The asset stores the link via train_id, so the pairing is one-to-one.
+ */
+export async function createTrainForVehicleAsset(input: {
+  asset_id: string
+  section_id: string
+  train_number: string
+  name: string
+  priority?: TrainRow['priority']
+  frequency?: TrainRow['frequency']
+}): Promise<{ error: { message: string } | null; trainId?: string }> {
+  const { data, error } = await supabase
+    .from('trains')
+    .insert({
+      section_id: input.section_id,
+      train_number: input.train_number,
+      name: input.name,
+      start_time: '06:00:00',
+      end_time: '18:00:00',
+      train_type: 'express',
+      priority: input.priority ?? 'express',
+      frequency: input.frequency ?? 'daily',
+      status: 'scheduled' as const,
+      activity: 'running',
+    })
+    .select('id')
+    .single()
+  if (error) return { error }
+  const { error: linkErr } = await supabase
+    .from('assets')
+    .update({ train_id: data.id })
+    .eq('id', input.asset_id)
+  if (linkErr) return { error: linkErr }
+  return { error: null, trainId: data.id as string }
 }
 
 export function updateTrain(id: string, patch: Partial<NewTrainInput> & { status?: TrainRow['status'] }) {
@@ -515,8 +556,101 @@ export function deleteBlock(id: string) {
   return supabase.from('blocks').delete().eq('id', id)
 }
 
+/** Create a scheduled service (train) for a registered vehicle asset and
+ * link the asset to it, so the vehicle appears on timelines/the map. */
+export async function createTrainForAsset(input: {
+  asset_id: string
+  section_id: string
+  train_number: string
+  name: string
+  start_time: string
+  end_time: string
+}) {
+  const { data, error } = await supabase
+    .from('trains')
+    .insert({
+      section_id: input.section_id,
+      train_number: input.train_number,
+      name: input.name,
+      start_time: input.start_time,
+      end_time: input.end_time,
+      train_type: 'express',
+      status: 'scheduled' as const,
+      activity: 'running',
+    })
+    .select('id')
+    .single()
+  if (error) return { error }
+  const { error: linkErr } = await supabase
+    .from('assets')
+    .update({ train_id: data.id })
+    .eq('id', input.asset_id)
+  if (linkErr) return { error: linkErr }
+  return { error: null, trainId: data.id as string }
+}
+
 export function deleteComplaint(id: string) {
   return supabase.from('complaints').delete().eq('id', id)
+}
+
+/** Status updates on complaints — used by the non-admin "Mark resolved" action. */
+export function updateComplaintStatus(id: string, status: 'new' | 'linked' | 'resolved') {
+  return supabase.from('complaints').update({ status }).eq('id', id)
+}
+
+/** Manual section tagging / edits on complaints (Data Console). */
+export function updateComplaint(id: string, patch: Partial<NewComplaintInput> & { status?: 'new' | 'linked' | 'resolved' }) {
+  return supabase.from('complaints').update(patch).eq('id', id)
+}
+
+// ---------------------------------------------------------------------------
+// Demo Mode — non-destructive hide/restore of seeded data. Rows are flagged
+// with demo_hidden = true (never deleted). The Network View map ignores the
+// flag so the topology stays populated during demos.
+// ---------------------------------------------------------------------------
+
+export type DemoModeState = { enabled: boolean; hiddenCounts: { trains: number; blocks: number; complaints: number; assets: number } }
+
+async function countHidden(): Promise<DemoModeState['hiddenCounts']> {
+  const [t, b, c, a] = await Promise.all([
+    supabase.from('trains').select('id', { count: 'exact', head: true }).eq('demo_hidden', true),
+    supabase.from('blocks').select('id', { count: 'exact', head: true }).eq('demo_hidden', true),
+    supabase.from('complaints').select('id', { count: 'exact', head: true }).eq('demo_hidden', true),
+    supabase.from('assets').select('id', { count: 'exact', head: true }).eq('demo_hidden', true),
+  ])
+  return { trains: t.count ?? 0, blocks: b.count ?? 0, complaints: c.count ?? 0, assets: a.count ?? 0 }
+}
+
+export async function enableDemoMode(): Promise<DemoModeState> {
+  // flag every currently-visible row of each table
+  await Promise.all([
+    supabase.from('trains').update({ demo_hidden: true }).eq('demo_hidden', false),
+    supabase.from('blocks').update({ demo_hidden: true }).eq('demo_hidden', false),
+    supabase.from('complaints').update({ demo_hidden: true }).eq('demo_hidden', false),
+    supabase.from('assets').update({ demo_hidden: true }).eq('demo_hidden', false),
+  ])
+  localStorage.setItem('railmind-demo-mode', 'on')
+  return { enabled: true, hiddenCounts: await countHidden() }
+}
+
+export async function disableDemoMode(): Promise<DemoModeState> {
+  await Promise.all([
+    supabase.from('trains').update({ demo_hidden: false }).eq('demo_hidden', true),
+    supabase.from('blocks').update({ demo_hidden: false }).eq('demo_hidden', true),
+    supabase.from('complaints').update({ demo_hidden: false }).eq('demo_hidden', true),
+    supabase.from('assets').update({ demo_hidden: false }).eq('demo_hidden', true),
+  ])
+  localStorage.setItem('railmind-demo-mode', 'off')
+  return { enabled: false, hiddenCounts: await countHidden() }
+}
+
+export async function getDemoModeState(): Promise<DemoModeState> {
+  return { enabled: localStorage.getItem('railmind-demo-mode') === 'on', hiddenCounts: await countHidden() }
+}
+
+/** Demo-Mode filter for normal views: hide flagged rows when enabled. */
+export function demoFilter<T extends { demo_hidden?: boolean | null }>(rows: T[], enabled: boolean): T[] {
+  return enabled ? rows.filter((r) => !r.demo_hidden) : rows
 }
 
 /** Mark a section's track segment conflicted/blocked (Network View + admin). */
@@ -569,7 +703,7 @@ export interface NewAssetInput {
 }
 
 export function insertAsset(input: NewAssetInput) {
-  return supabase.from('assets').insert(input)
+  return supabase.from('assets').insert(input).select('id').single()
 }
 
 export function updateAsset(id: string, patch: Partial<NewAssetInput>) {

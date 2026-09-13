@@ -13,7 +13,8 @@ import {
 import { useRailData } from '@/lib/use-rail-data'
 import {
   deleteAsset, deleteBlock, deleteComplaint, deleteSection, deleteStation, deleteTrain,
-  insertSection, insertStation, insertTrain, updateSection, updateStation, updateTrain,
+  insertSection, insertStation, insertTrain, insertBlock, insertComplaint,
+  updateSection, updateStation, updateTrain, updateComplaint,
   updateBlockStatus, updateAsset, setSectionConflict,
 } from '@/lib/api'
 import type { BlockStatus } from '@/lib/types'
@@ -205,6 +206,103 @@ export function DataConsoleView() {
           </form>
         </InlineCard>
       )}
+      {adding && tab === 'blocks' && (
+        <InlineCard title="New block request" onClose={() => setAdding(false)}>
+          <form
+            className="grid grid-cols-2 gap-3 md:grid-cols-6"
+            onSubmit={async (e) => {
+              e.preventDefault()
+              const fd = new FormData(e.currentTarget)
+              await run(() => insertBlock({
+                section_id: String(fd.get('section') || ''),
+                title: String(fd.get('title') || ''),
+                block_type: String(fd.get('type') || 'maintenance'),
+                start_time: new Date(String(fd.get('start') || '').length ? String(fd.get('start')) : Date.now()).toISOString(),
+                end_time: new Date(String(fd.get('end') || '').length ? String(fd.get('end')) : Date.now() + 4 * 3600_000).toISOString(),
+                urgency: (String(fd.get('urgency') || 'medium') as 'low' | 'medium' | 'high'),
+                requested_by: 'Data Console (manual entry)',
+              }))
+              setAdding(false)
+            }}
+          >
+            <Field label="Title"><Input name="title" required placeholder="Rail grinding" /></Field>
+            <Field label="Section (manual pick)">
+              <Select name="section" required>
+                {sections.map((s) => <option key={s.id} value={s.id}>{s.code} — {s.name}</option>)}
+              </Select>
+            </Field>
+            <Field label="Type">
+              <Select name="type" defaultValue="maintenance">
+                <option value="maintenance">maintenance</option>
+                <option value="inspection">inspection</option>
+                <option value="manual">manual</option>
+              </Select>
+            </Field>
+            <Field label="Start"><Input name="start" type="datetime-local" required /></Field>
+            <Field label="End"><Input name="end" type="datetime-local" required /></Field>
+            <Field label="Urgency">
+              <Select name="urgency" defaultValue="medium">
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </Select>
+            </Field>
+            <div className="col-span-2 md:col-span-6"><SubmitBtn /></div>
+          </form>
+        </InlineCard>
+      )}
+      {adding && tab === 'complaints' && (
+        <InlineCard title="New complaint (manual entry)" onClose={() => setAdding(false)}>
+          <form
+            className="grid grid-cols-2 gap-3 md:grid-cols-6"
+            onSubmit={async (e) => {
+              e.preventDefault()
+              const fd = new FormData(e.currentTarget)
+              const manualSection = String(fd.get('section') || '')
+              const lat = fd.get('lat') ? Number(fd.get('lat')) : null
+              const lng = fd.get('lng') ? Number(fd.get('lng')) : null
+              await run(() => insertComplaint({
+                section_id: manualSection || null,
+                category: String(fd.get('category') || 'Other'),
+                description: String(fd.get('description') || ''),
+                severity: (String(fd.get('severity') || 'medium') as 'low' | 'medium' | 'high'),
+                photo_url: null,
+                latitude: lat,
+                longitude: lng,
+                reported_by: 'Data Console (manual entry)',
+              }))
+              setAdding(false)
+            }}
+          >
+            <Field label="Category">
+              <Select name="category" defaultValue="Track Defect">
+                <option>Track Defect</option>
+                <option>Signal Fault</option>
+                <option>Safety Hazard</option>
+                <option>Block Overrun</option>
+                <option>Other</option>
+              </Select>
+            </Field>
+            <Field label="Section (manual pick — overrides GPS)">
+              <Select name="section" defaultValue="">
+                <option value="">— none —</option>
+                {sections.map((s) => <option key={s.id} value={s.id}>{s.code} — {s.name}</option>)}
+              </Select>
+            </Field>
+            <Field label="Severity">
+              <Select name="severity" defaultValue="medium">
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </Select>
+            </Field>
+            <Field label="Latitude (optional)"><Input name="lat" type="number" step="any" /></Field>
+            <Field label="Longitude (optional)"><Input name="lng" type="number" step="any" /></Field>
+            <Field label="Description"><Input name="description" required placeholder="What was observed" /></Field>
+            <div className="col-span-2 md:col-span-6"><SubmitBtn /></div>
+          </form>
+        </InlineCard>
+      )}
       {adding && tab === 'trains' && (
         <InlineCard title="New train" onClose={() => setAdding(false)}>
           <form
@@ -246,8 +344,12 @@ export function DataConsoleView() {
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             {tab === 'sections' && (
-              <Table head={['Name', 'Code', 'Endpoints', 'Blocks', 'Conflict', '']}>
-                {(filtered as typeof sections).map((s) => (
+              <Table head={['Name', 'Code', 'Endpoints', 'Blocks', 'Conflict', 'Status', '']}>
+                {(filtered as typeof sections).map((s) => {
+                  const hasConflict = blocks.some((b) => b.section_id === s.id && b.status === 'conflict')
+                  const openComplaints = complaints.filter((c) => c.section_id === s.id && c.status !== 'resolved').length
+                  const affected = hasConflict || openComplaints > 0
+                  return (
                   <tr key={s.id} className="hover:bg-muted/40">
                     <Td className="font-medium">{s.name}</Td>
                     <Td mono>{s.code}</Td>
@@ -255,20 +357,26 @@ export function DataConsoleView() {
                     <Td>{blocks.filter((b) => b.section_id === s.id).length}</Td>
                     <Td>
                       <Button
-                        size="sm" variant={blocks.some((b) => b.section_id === s.id && b.status === 'conflict') ? 'destructive' : 'outline'}
+                        size="sm" variant={hasConflict ? 'destructive' : 'outline'}
                         className="h-7 px-2 text-xs"
                         disabled={busy}
-                        onClick={() => run(() => setSectionConflict(s.id, !blocks.some((b) => b.section_id === s.id && b.status === 'conflict')))}
+                        onClick={() => run(() => setSectionConflict(s.id, !hasConflict))}
                       >
-                        {blocks.some((b) => b.section_id === s.id && b.status === 'conflict') ? <><Ban className="size-3.5" /> Blocked</> : <><ShieldCheck className="size-3.5" /> Clear</>}
+                        {hasConflict ? <><Ban className="size-3.5" /> Blocked</> : <><ShieldCheck className="size-3.5" /> Clear</>}
                       </Button>
+                    </Td>
+                    <Td>
+                      <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', affected ? 'bg-conflict/15 text-conflict' : 'bg-approved/15 text-approved')}>
+                        {affected ? `Affected${openComplaints ? ` · ${openComplaints} open` : ''}` : 'Clear'}
+                      </span>
                     </Td>
                     <RowActions onEdit={() => setEditing(editing === s.id ? null : s.id)} onDelete={() => setPendingDelete({ kind: 'sections', id: s.id, name: s.name })} />
                   </tr>
-                ))}
+                  )
+                })}
                 {editing && sections.filter((s) => s.id === editing).map((s) => (
                   <tr key={`${s.id}-edit`} className="bg-muted/30">
-                    <td colSpan={6} className="px-5 py-3">
+                    <td colSpan={7} className="px-5 py-3">
                       <form className="flex flex-wrap items-end gap-3" onSubmit={async (e) => {
                         e.preventDefault()
                         const fd = new FormData(e.currentTarget)
@@ -442,12 +550,23 @@ export function DataConsoleView() {
             )}
 
             {tab === 'complaints' && (
-              <Table head={['Category', 'Section', 'Description', 'Severity', 'Status', '']}>
+              <Table head={['Category', 'Section', 'Description', 'Retag', 'Severity', 'Status', '']}>
                 {(filtered as typeof complaints).map((c) => (
                   <tr key={c.id} className="hover:bg-muted/40">
                     <Td className="font-medium">{c.category}</Td>
                     <Td>{c.section_id ? sectionById.get(c.section_id)?.name?.replace(' Section', '') ?? '—' : '—'}</Td>
                     <Td className="max-w-xs truncate text-muted-foreground">{c.description}</Td>
+                    <Td>
+                      <Select
+                        value={c.section_id ?? ''}
+                        className="h-8 w-40 text-xs"
+                        aria-label="Complaint section"
+                        onChange={(e) => run(() => updateComplaint(c.id, { section_id: e.target.value || null }))}
+                      >
+                        <option value="">— unassigned —</option>
+                        {sections.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
+                      </Select>
+                    </Td>
                     <Td><Badge variant={c.severity === 'high' ? 'danger' : c.severity === 'medium' ? 'warning' : 'neutral'}>{c.severity}</Badge></Td>
                     <Td><Badge variant={c.status === 'resolved' ? 'success' : c.status === 'linked' ? 'info' : 'warning'}>{c.status}</Badge></Td>
                     <RowActions onDelete={() => setPendingDelete({ kind: 'complaints', id: c.id, name: c.category })} />

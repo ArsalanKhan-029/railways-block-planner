@@ -31,7 +31,16 @@ export interface TrainRoute {
   day: number[]
 }
 
-export interface TrainRow {
+/** Demo Mode flag: row hidden from non-map views while demo mode is enabled. */
+interface DemoFlag {
+  demo_hidden?: boolean | null
+}
+
+/** Service priority class + running frequency for train scheduling. */
+export type TrainPriority = 'express' | 'mail' | 'passenger' | 'freight'
+export type TrainFrequency = 'daily' | 'weekly' | 'weekdays' | 'weekends' | 'specific'
+
+export interface TrainRow extends DemoFlag {
   id: string
   section_id: string
   train_number: string
@@ -42,6 +51,8 @@ export interface TrainRow {
   train_type: string
   activity: string
   status: TrainStatus
+  priority?: TrainPriority
+  frequency?: TrainFrequency
   /** Ordered station-code route with real schedule times (jsonb). */
   route?: TrainRoute | null
   distance_km?: number | null
@@ -59,7 +70,7 @@ export interface StationRow {
   longitude: number
 }
 
-export interface BlockRow {
+export interface BlockRow extends DemoFlag {
   id: string
   section_id: string
   title: string
@@ -73,7 +84,7 @@ export interface BlockRow {
   created_at: string
 }
 
-export interface ComplaintRow {
+export interface ComplaintRow extends DemoFlag {
   id: string
   section_id: string | null
   category: string
@@ -96,7 +107,7 @@ export interface RoleRow {
   created_at: string
 }
 
-export interface AssetRow {
+export interface AssetRow extends DemoFlag {
   id: string
   section_id: string | null
   asset_code: string

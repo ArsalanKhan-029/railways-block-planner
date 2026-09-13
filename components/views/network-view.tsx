@@ -6,14 +6,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Plus, Minus, Maximize2, Loader2, Radar, TrainFront, Wrench,
-  TriangleAlert, ChevronDown, Download, Clock, Layers, Ban,
+  TriangleAlert, ChevronDown, Download, Clock, Layers, Ban, Eye, EyeOff,
 } from 'lucide-react'
 import { useRailData } from '@/lib/use-rail-data'
+import { useAuth } from '@/lib/auth'
 import { useAppShell } from '@/lib/app-shell'
 import { projectToUnit } from '@/lib/geo'
 import { istDayStartUtcMs, timestampToIstHours, timeToHours } from '@/lib/api'
-import { setSectionConflict, deleteBlock } from '@/lib/api'
-import type { BlockRow, SectionRow, StationRow, TrainRow } from '@/lib/types'
+import { setSectionConflict, deleteBlock, deleteComplaint, updateComplaintStatus } from '@/lib/api'
+import type { BlockRow, ComplaintRow, SectionRow, StationRow, TrainRow } from '@/lib/types'
 import { ConfirmDelete } from '@/components/confirm-delete'
 import { cn } from '@/lib/utils'
 
@@ -38,6 +39,8 @@ const LEGEND_LAYERS = [
   { id: 'trains', label: 'Running trains (glow)', color: '#a3e635' },
   { id: 'conflicts', label: 'Blocked track + label', color: '#ef4444' },
 ] as const
+
+// complaint issues share the conflicts layer toggle (both are problem overlays)
 
 type LayerId = (typeof LEGEND_LAYERS)[number]['id']
 
@@ -125,18 +128,37 @@ function positionAt(tr: TrainRow, stationsByCode: Map<string, StationRow>, nowH:
 }
 
 export function NetworkView() {
-  const { stations, sections, trains, blocks, loading, refresh } = useRailData()
-  const { theme, target, clearTarget } = useAppShell()
+  const { stations, sections, trains, blocks, complaints, assets, loading, refresh } = useRailData()
+  const { theme, target, clearTarget, setView } = useAppShell()
+  const { identity } = useAuth()
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [hoverTrain, setHoverTrain] = useState<TrainPos | null>(null)
   const [hoverConflict, setHoverConflict] = useState<{ block: BlockRow; section: SectionRow } | null>(null)
+  const [hoverIssue, setHoverIssue] = useState<{ section: SectionRow; list: ComplaintRow[] } | null>(null)
+  const [selectedIssue, setSelectedIssue] = useState<{ section: SectionRow; list: ComplaintRow[] } | null>(null)
   const [selectedTrain, setSelectedTrain] = useState<TrainRow | null>(null)
   const [selectedConflict, setSelectedConflict] = useState<{ block: BlockRow; section: SectionRow } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<BlockRow | null>(null)
   const [layers, setLayers] = useState<Set<LayerId>>(new Set(LEGEND_LAYERS.map((l) => l.id)))
   const [legendOpen, setLegendOpen] = useState(true)
   const [scrubH, setScrubH] = useState<number | null>(null) // null = live clock
+  // admin route-visibility control (7B): hidden section ids persist across
+  // sessions in localStorage; routes whose assets are all inactive flag
+  // themselves hidden by default but stay manually overridable
+  const [hiddenRoutes, setHiddenRoutes] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('railmind-hidden-routes') ?? '[]'))
+    } catch {
+      return new Set<string>()
+    }
+  })
+  const [routesOpen, setRoutesOpen] = useState(false)
+
+  function setVisibleRoutes(next: Set<string>) {
+    setHiddenRoutes(next)
+    localStorage.setItem('railmind-hidden-routes', JSON.stringify([...next]))
+  }
   const [nowH, setNowH] = useState(() => {
     const ist = new Date(Date.now() + 5.5 * 3_600_000)
     return ist.getUTCHours() + ist.getUTCMinutes() / 60
@@ -221,6 +243,34 @@ export function NetworkView() {
     return out
   }, [sections, stations, stationsByCode, projected])
 
+  // assets per section + asset-inactive detection for the visibility panel
+  const sectionActivity = useMemo(() => {
+    const out = new Map<string, { total: number; active: number }>()
+    for (const a of assets) {
+      if (!a.section_id) continue
+      const cur = out.get(a.section_id) ?? { total: 0, active: 0 }
+      cur.total += 1
+      if (a.status === 'operational' || a.status === 'degraded') cur.active += 1
+      out.set(a.section_id, cur)
+    }
+    return out
+  }, [assets])
+  const hasAssets = assets.length > 0
+  const isRouteAutoInactive = useCallback(
+    (sectionId: string) => {
+      const act = sectionActivity.get(sectionId)
+      return hasAssets ? !!act && act.total > 0 && act.active === 0 : false
+    },
+    [sectionActivity, hasAssets],
+  )
+  const isVisibleRoute = useCallback(
+    (sectionId: string) => {
+      if (hiddenRoutes.has(sectionId)) return false
+      return true
+    },
+    [hiddenRoutes],
+  )
+
   // conflicts: conflict-status blocks mapped onto their section — drawn as a
   // straight dashed overlay between the section's two hub endpoints (image-2
   // "BLOCKED" schematic style) with the section path for hover hit-testing
@@ -240,6 +290,27 @@ export function NetworkView() {
     }
     return out
   }, [blocks, sectionById, sectionPaths, projected])
+
+  // complaint-originated issues: open complaints grouped per section — amber
+  // warning markers on the affected track, distinct from red conflict blocks
+  const complaintIssues = useMemo(() => {
+    const bySection = new Map<string, ComplaintRow[]>()
+    for (const c of complaints) {
+      if (c.status === 'resolved' || !c.section_id) continue
+      const list = bySection.get(c.section_id) ?? []
+      list.push(c)
+      bySection.set(c.section_id, list)
+    }
+    const out: { section: SectionRow; list: ComplaintRow[]; mid: { x: number; y: number } }[] = []
+    for (const [sectionId, list] of bySection) {
+      const sec = sectionById.get(sectionId)
+      const a = sec?.from_station ? projected.get(sec.from_station) : null
+      const bb = sec?.to_station ? projected.get(sec.to_station) : null
+      if (!sec || !a || !bb) continue
+      out.push({ section: sec, list, mid: { x: (a.x + bb.x) / 2, y: (a.y + bb.y) / 2 } })
+    }
+    return out
+  }, [complaints, sectionById, projected])
 
   // train positions at activeH
   const trainPositions = useMemo(() => {
@@ -445,7 +516,7 @@ export function NetworkView() {
                   <rect width={VB.w} height={VB.h} fill="url(#grid)" opacity={0.5} />
 
                   {/* tracks */}
-                  {visibleTracks && sectionPaths.map((sp) => (
+                  {visibleTracks && sectionPaths.filter((sp) => isVisibleRoute(sp.section.id)).map((sp) => (
                     <path key={sp.section.id} d={sp.d} fill="none" stroke={theme === 'dark' ? '#64748b' : '#94a3b8'} strokeWidth={2} strokeOpacity={0.8} vectorEffect="non-scaling-stroke" />
                   ))}
 
@@ -466,6 +537,31 @@ export function NetworkView() {
                       >
                         BLOCKED
                       </text>
+                    </g>
+                  ))}
+
+                  {/* complaint issues — amber warning marker per affected section */}
+                  {visibleConflicts && complaintIssues.map((ci) => (
+                    <g
+                      key={ci.section.id}
+                      data-interactive
+                      className="cursor-pointer"
+                      onMouseEnter={() => setHoverIssue(ci)}
+                      onMouseLeave={() => setHoverIssue(null)}
+                      onClick={() => setSelectedIssue(ci)}
+                    >
+                      <circle cx={ci.mid.x * VB.w} cy={ci.mid.y * VB.h} r={14} fill="transparent" />
+                      <g transform={`translate(${ci.mid.x * VB.w}, ${ci.mid.y * VB.h})`} className="animate-pulse">
+                        <path
+                          d="M0,-11 L10.5,7 L-10.5,7 Z"
+                          fill="#f59e0b"
+                          stroke={theme === 'dark' ? '#0b1220' : '#fff'}
+                          strokeWidth={1.5}
+                        />
+                        <text x={0} y={5} fontSize={9} fontWeight={800} textAnchor="middle" fill="#0b1220">
+                          !
+                        </text>
+                      </g>
                     </g>
                   ))}
 
@@ -548,6 +644,19 @@ export function NetworkView() {
                 </div>
               )}
 
+              {/* hover tooltip: complaint issue */}
+              {hoverIssue && (
+                <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-lg border border-pending/50 bg-popover px-3.5 py-2 text-xs shadow-xl">
+                  <p className="font-semibold text-pending-foreground">⚠ {hoverIssue.list.length} open complaint{hoverIssue.list.length > 1 ? 's' : ''} · {hoverIssue.section.name}</p>
+                  {hoverIssue.list.slice(0, 3).map((c) => (
+                    <p key={c.id} className="mt-0.5 text-muted-foreground">
+                      {c.category} · severity {c.severity} · reported by {c.reported_by}
+                    </p>
+                  ))}
+                  <p className="mt-1 text-[10px] text-muted-foreground">Click for details &amp; actions</p>
+                </div>
+              )}
+
               {/* hover tooltip: conflict */}
               {hoverConflict && (
                 <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-lg border border-conflict/40 bg-popover px-3.5 py-2 text-xs shadow-xl">
@@ -590,6 +699,57 @@ export function NetworkView() {
               )}
             </CardContent>
           </Card>
+
+          {/* admin: per-route visibility (persists via localStorage) */}
+          {identity?.role === 'admin' && (
+            <Card>
+              <CardContent className="p-0">
+                <button type="button" onClick={() => setRoutesOpen((o) => !o)} className="flex w-full items-center justify-between px-4 py-3 text-left">
+                  <span className="flex items-center gap-2 text-sm font-semibold"><Eye className="size-4" /> Routes on map</span>
+                  <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', routesOpen && 'rotate-180')} />
+                </button>
+                {routesOpen && (
+                  <div className="max-h-72 space-y-1 overflow-y-auto border-t border-border px-4 py-3">
+                    {sections.map((sec) => {
+                      const hidden = hiddenRoutes.has(sec.id)
+                      const autoInactive = isRouteAutoInactive(sec.id)
+                      return (
+                        <div key={sec.id} className="flex items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted/50">
+                          <span className="min-w-0 flex-1 truncate">
+                            <span className="font-mono text-muted-foreground">{sec.code}</span>{' '}
+                            {sec.name.replace(' Section', '')}
+                            {autoInactive && <span className="ml-1 rounded bg-muted px-1 text-[10px] text-muted-foreground">assets inactive</span>}
+                          </span>
+                          <Button
+                            size="sm" variant={hidden ? 'outline' : 'ghost'}
+                            className="h-6 px-1.5 text-[11px]"
+                            aria-label={hidden ? `Restore ${sec.code} to map` : `Remove ${sec.code} from map`}
+                            onClick={() => {
+                              const next = new Set(hiddenRoutes)
+                              if (hidden) next.delete(sec.id)
+                              else next.add(sec.id)
+                              setVisibleRoutes(next)
+                            }}
+                          >
+                            {hidden ? <><EyeOff className="size-3" /> Hidden</> : <><Eye className="size-3" /> On map</>}
+                          </Button>
+                        </div>
+                      )
+                    })}
+                    {hiddenRoutes.size > 0 && (
+                      <button
+                        type="button"
+                        className="w-full rounded px-1 py-1.5 text-left text-[11px] text-primary hover:underline"
+                        onClick={() => setVisibleRoutes(new Set())}
+                      >
+                        Restore all hidden routes ({hiddenRoutes.size})
+                      </button>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardContent className="space-y-3 p-4">
@@ -653,6 +813,18 @@ export function NetworkView() {
         />
       )}
 
+      {selectedIssue && (
+        <IssueCard
+          section={selectedIssue.section}
+          complaints={selectedIssue.list}
+          onClose={() => setSelectedIssue(null)}
+          onDone={() => {
+            setSelectedIssue(null)
+            refresh()
+          }}
+        />
+      )}
+
       {confirmDelete && (
         <ConfirmDelete
           name={confirmDelete.title}
@@ -666,6 +838,84 @@ export function NetworkView() {
         />
       )}
     </div>
+  )
+}
+
+/** Complaint-originated issues on a section — resolve or (admin) delete. */
+function IssueCard({
+  section,
+  complaints,
+  onClose,
+  onDone,
+}: {
+  section: SectionRow
+  complaints: ComplaintRow[]
+  onClose: () => void
+  onDone: () => void
+}) {
+  const { identity } = useAuth()
+  const isAdmin = identity?.role === 'admin'
+  const [busy, setBusy] = useState<string | null>(null)
+  const [confirmDel, setConfirmDel] = useState<ComplaintRow | null>(null)
+
+  async function resolve(c: ComplaintRow) {
+    setBusy(c.id)
+    await updateComplaintStatus(c.id, 'resolved')
+    setBusy(null)
+    onDone()
+  }
+  async function remove(c: ComplaintRow) {
+    setBusy(c.id)
+    await deleteComplaint(c.id)
+    setBusy(null)
+    onDone()
+  }
+
+  return (
+    <>
+      <Card className="border-pending/50">
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-lg bg-pending/20 text-pending-foreground">
+              <TriangleAlert className="size-4.5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-pending-foreground">
+                {complaints.length} open complaint{complaints.length > 1 ? 's' : ''} · {section.name}
+              </p>
+              <p className="text-xs text-muted-foreground">Raised via Report Issue — resolve or manage below</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+          <div className="mt-3 space-y-2">
+            {complaints.map((c) => (
+              <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs">
+                <span className="font-medium">{c.category}</span>
+                <span className="text-muted-foreground">severity {c.severity}</span>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">{c.description}</span>
+                <Button size="sm" variant="outline" disabled={busy === c.id} onClick={() => resolve(c)}>
+                  Mark resolved
+                </Button>
+                {isAdmin && (
+                  <Button size="sm" variant="destructive" disabled={busy === c.id} onClick={() => setConfirmDel(c)}>
+                    Delete
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+      {confirmDel && (
+        <ConfirmDelete
+          name={`${confirmDel.category} complaint`}
+          onCancel={() => setConfirmDel(null)}
+          onConfirm={() => remove(confirmDel)}
+        />
+      )}
+    </>
   )
 }
 
@@ -744,6 +994,8 @@ function ConflictCard({
   onDelete: () => void
 }) {
   const [busy, setBusy] = useState(false)
+  const { identity } = useAuth()
+  const isAdmin = identity?.role === 'admin'
   async function resolve() {
     setBusy(true)
     await setSectionConflict(section.id, false)
@@ -767,9 +1019,11 @@ function ConflictCard({
           {busy && <Loader2 className="animate-spin" />}
           Mark resolved
         </Button>
-        <Button size="sm" variant="destructive" onClick={onDelete}>
-          Delete conflict
-        </Button>
+        {isAdmin && (
+          <Button size="sm" variant="destructive" onClick={onDelete}>
+            Delete conflict
+          </Button>
+        )}
       </CardContent>
     </Card>
   )

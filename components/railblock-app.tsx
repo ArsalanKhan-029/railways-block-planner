@@ -10,11 +10,13 @@ import { ReportIssueView } from '@/components/views/report-issue-view'
 import { AnalyticsView } from '@/components/views/analytics-view'
 import { AdminView } from '@/components/views/admin-view'
 import { DataConsoleView } from '@/components/views/data-console-view'
+import { ScheduleView } from '@/components/views/schedule-view'
 import { DriverView } from '@/components/views/driver-view'
 import { SettingsView } from '@/components/views/settings-view'
 import { LoginScreen } from '@/components/login-screen'
 import { canAccess, type ViewId } from '@/lib/nav'
 import { AppShellProvider, useAppShell, type SearchTarget } from '@/lib/app-shell'
+import { RailDataProvider } from '@/lib/use-rail-data'
 import { NotificationsProvider, NotificationToasts } from '@/lib/notifications'
 import { RailAIWidget } from '@/components/railai-widget'
 import { useAuth, profileToRole } from '@/lib/auth'
@@ -26,6 +28,7 @@ const TITLES: Record<ViewId, string> = {
   planning: 'Block Planning & Conflict Center',
   network: 'Network View — Live Train Map',
   assets: 'Asset Registry',
+  schedule: 'Schedule Management',
   report: 'Report an Issue',
   analytics: 'Analytics & Reports',
   admin: 'User Management',
@@ -122,6 +125,7 @@ function Shell() {
           )}
           {activeView === 'network' && <NetworkView />}
           {activeView === 'assets' && <AssetRegistryView />}
+          {activeView === 'schedule' && <ScheduleView />}
           {activeView === 'report' && <ReportIssueView />}
           {activeView === 'analytics' && <AnalyticsView />}
           {activeView === 'admin' && <AdminView />}
@@ -149,10 +153,12 @@ export function RailblockApp() {
   const role = identity ? (profileToRole(identity.role) as Role) : 'Viewer'
   return (
     <AppShellProvider role={role}>
-      <NotificationsProvider userId={identity ? identity.userId : 'anonymous'}>
-        <Shell />
-        <NotificationToasts />
-      </NotificationsProvider>
+      <RailDataProvider>
+        <NotificationsProvider userId={identity ? identity.userId : 'anonymous'}>
+          <Shell />
+          <NotificationToasts />
+        </NotificationsProvider>
+      </RailDataProvider>
     </AppShellProvider>
   )
 }

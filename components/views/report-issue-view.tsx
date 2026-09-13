@@ -18,7 +18,9 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import type { Complaint } from '@/lib/mock-data'
 import { toComplaints } from '@/lib/mappers'
-import { insertComplaint, uploadComplaintPhoto } from '@/lib/api'
+import { insertComplaint, uploadComplaintPhoto, updateComplaintStatus, deleteComplaint } from '@/lib/api'
+import { useAuth } from '@/lib/auth'
+import { ConfirmDelete } from '@/components/confirm-delete'
 import { useRailData } from '@/lib/use-rail-data'
 import { cn } from '@/lib/utils'
 
@@ -47,6 +49,9 @@ interface Coords {
 
 export function ReportIssueView() {
   const { sections, complaints, refresh, loading, error } = useRailData()
+  const { identity } = useAuth()
+  const isAdmin = identity?.role === 'admin'
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; label: string } | null>(null)
   const [severity, setSeverity] = useState<(typeof SEVERITIES)[number]>('Medium')
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photo, setPhoto] = useState<string | null>(null)
@@ -87,10 +92,47 @@ export function ReportIssueView() {
     }
   }, [])
 
+  // ----- AI vision triage (suggestion only — manual severity stays master) -----
+  const [aiSuggestion, setAiSuggestion] = useState<{ priority: 'low' | 'medium' | 'high'; reason: string } | null>(null)
+  const [aiState, setAiState] = useState<'idle' | 'analyzing' | 'error'>('idle')
+  const [aiError, setAiError] = useState<string | null>(null)
+
+  async function analyzePhoto(file: File) {
+    setAiState('analyzing')
+    setAiError(null)
+    setAiSuggestion(null)
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result))
+        reader.onerror = () => reject(new Error('read failed'))
+        reader.readAsDataURL(file)
+      })
+      const res = await fetch('/api/railai/vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageDataUrl: dataUrl }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.error) {
+        setAiError(String(json.error ?? 'Analysis failed'))
+        setAiState('error')
+        return
+      }
+      setAiSuggestion({ priority: json.priority, reason: json.reason })
+      setAiState('idle')
+    } catch {
+      setAiError('Could not reach the analysis service.')
+      setAiState('error')
+    }
+  }
+
   function handleFile(file?: File) {
     if (!file) return
     setPhotoFile(file)
     setPhoto(URL.createObjectURL(file))
+    // non-blocking: the user keeps filling the form while AI analyzes
+    void analyzePhoto(file)
   }
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
@@ -119,6 +161,8 @@ export function ReportIssueView() {
       ;(e.target as HTMLFormElement).reset()
       setPhoto(null)
       setPhotoFile(null)
+      setAiSuggestion(null)
+      setAiState('idle')
       refresh()
     } catch {
       setSubmittedRef(null)
@@ -273,6 +317,42 @@ export function ReportIssueView() {
               </div>
             </div>
 
+            {/* AI-suggested priority (photo only; suggestion, never forced) */}
+            {photo && (
+              <div className="flex flex-col gap-1.5">
+                <Label>AI-suggested priority</Label>
+                <div className="rounded-lg border border-border p-3 text-sm">
+                  {aiState === 'analyzing' && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" /> Analyzing photo…
+                    </div>
+                  )}
+                  {aiState === 'error' && (
+                    <p className="text-xs text-muted-foreground">{aiError} You can still set severity manually below.</p>
+                  )}
+                  {aiState === 'idle' && aiSuggestion && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={SEVERITY_VARIANT[aiSuggestion.priority as keyof typeof SEVERITY_VARIANT]}>
+                        AI: {aiSuggestion.priority}
+                      </Badge>
+                      <span className="min-w-0 flex-1 text-xs text-muted-foreground">{aiSuggestion.reason}</span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          const p = aiSuggestion.priority
+                          setSeverity((p.charAt(0).toUpperCase() + p.slice(1)) as (typeof SEVERITIES)[number])
+                        }}
+                      >
+                        Use AI suggestion
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Severity */}
             <div className="flex flex-col gap-1.5">
               <Label>Severity</Label>
@@ -344,6 +424,7 @@ export function ReportIssueView() {
                   <th className="px-3 py-3 font-medium">Severity</th>
                   <th className="px-3 py-3 font-medium">Status</th>
                   <th className="px-5 py-3 font-medium">Date</th>
+                  <th className="px-5 py-3 font-medium">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -375,6 +456,31 @@ export function ReportIssueView() {
                       <Badge variant={STATUS_VARIANT[c.status]}>{c.status}</Badge>
                     </td>
                     <td className="px-5 py-3 text-xs text-muted-foreground">{c.date}</td>
+                    <td className="px-5 py-3">
+                      <div className="flex gap-1">
+                        {c.status !== 'Resolved' && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={async () => {
+                              await updateComplaintStatus(c.id, 'resolved')
+                              refresh()
+                            }}
+                          >
+                            Mark resolved
+                          </Button>
+                        )}
+                        {isAdmin && (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => setPendingDelete({ id: c.id, label: c.category })}
+                          >
+                            Delete
+                          </Button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -382,6 +488,18 @@ export function ReportIssueView() {
           </div>
         </CardContent>
       </Card>
+
+      {pendingDelete && (
+        <ConfirmDelete
+          name={`${pendingDelete.label} complaint`}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={async () => {
+            await deleteComplaint(pendingDelete.id)
+            setPendingDelete(null)
+            refresh()
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -1,13 +1,15 @@
 'use client'
 
-import { useState } from 'react'
-import { Bell, Globe, ShieldCheck } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Bell, Globe, Loader2, Presentation, ShieldCheck } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import type { Role } from '@/lib/mock-data'
+import { useRailData } from '@/lib/use-rail-data'
+import { enableDemoMode, disableDemoMode, getDemoModeState, type DemoModeState } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 function Toggle({ label, desc, defaultOn }: { label: string; desc: string; defaultOn?: boolean }) {
@@ -98,7 +100,67 @@ export function SettingsView({ role, email, displayName }: { role: Role; email: 
             <Toggle label="Dark mode" desc="Control-room night theme" />
           </CardContent>
         </Card>
+
+        {role === 'Admin' && <DemoModeCard />}
       </div>
     </div>
+  )
+}
+
+/** Admin-only Demo Mode: non-destructively hides seeded data from all views
+ * except the Network View map, for empty-state demos and walkthroughs. */
+function DemoModeCard() {
+  const { refresh } = useRailData()
+  const [state, setState] = useState<DemoModeState | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    void getDemoModeState().then(setState)
+  }, [])
+
+  async function toggle(next: boolean) {
+    setBusy(true)
+    const s = next ? await enableDemoMode() : await disableDemoMode()
+    setState(s)
+    setBusy(false)
+    refresh() // provider refetch — views now show/hide flagged rows
+  }
+
+  const enabled = state?.enabled ?? false
+  const counts = state?.hiddenCounts
+  return (
+    <Card>
+      <CardContent className="p-5">
+        <div className="mb-1 flex items-center gap-2">
+          <Presentation className="size-4 text-primary" />
+          <h2 className="text-sm font-semibold">Demo Mode</h2>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Temporarily hides seeded trains, blocks, complaints and assets from every view except the Network
+          View map. Nothing is deleted — data is flagged and fully restorable. Anything you create while Demo
+          Mode is on stays visible for the walkthrough.
+        </p>
+        <div className="mt-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium">{enabled ? 'Demo Mode is ON' : 'Demo Mode is off'}</p>
+            {counts && (
+              <p className="text-xs text-muted-foreground">
+                {counts.trains} trains · {counts.blocks} blocks · {counts.complaints} complaints · {counts.assets}{' '}assets
+                {enabled ? ' hidden (restorable)' : ' restored'}
+              </p>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant={enabled ? 'destructive' : 'default'}
+            disabled={busy || !state}
+            onClick={() => void toggle(!enabled)}
+          >
+            {busy && <Loader2 className="animate-spin" />}
+            {enabled ? 'Disable & restore data' : 'Enable Demo Mode'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
