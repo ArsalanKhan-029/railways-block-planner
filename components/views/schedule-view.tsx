@@ -14,7 +14,7 @@
  */
 
 import { useMemo, useState } from 'react'
-import { Loader2, Sparkles, Check, X, Wrench, TrainFront, History } from 'lucide-react'
+import { Loader2, Sparkles, Check, X, Wrench, TrainFront, History, Pencil, Trash2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -521,6 +521,9 @@ function PlanTab({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [applied, setApplied] = useState<string | null>(null)
+  // row-level editing of the proposed plan before approval
+  const [editTrainIdx, setEditTrainIdx] = useState<number | null>(null)
+  const [editBlockIdx, setEditBlockIdx] = useState<number | null>(null)
   const [history, setHistory] = useState<PlanHistoryEntry[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]')
@@ -532,6 +535,19 @@ function PlanTab({
   function loadHistory(h: PlanHistoryEntry[]) {
     setHistory(h)
     localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-20)))
+  }
+
+  function patchPlanTrain(i: number, patch: Partial<PlanTrain>) {
+    setPlan((p) => (p ? { ...p, trains: p.trains.map((t, j) => (j === i ? { ...t, ...patch } : t)) } : p))
+  }
+  function patchPlanBlock(i: number, patch: Partial<PlanBlock>) {
+    setPlan((p) => (p ? { ...p, blocks: p.blocks.map((b, j) => (j === i ? { ...b, ...patch } : b)) } : p))
+  }
+  function removePlanTrain(i: number) {
+    setPlan((p) => (p ? { ...p, trains: p.trains.filter((_, j) => j !== i) } : p))
+  }
+  function removePlanBlock(i: number) {
+    setPlan((p) => (p ? { ...p, blocks: p.blocks.filter((_, j) => j !== i) } : p))
   }
 
   // impact preview (5.4): trains + blocks before vs after applying the plan
@@ -558,6 +574,8 @@ function PlanTab({
     setLoading(true)
     setError(null)
     setApplied(null)
+    setEditTrainIdx(null)
+    setEditBlockIdx(null)
     try {
       const res = await fetch('/api/railai/plan', {
         method: 'POST',
@@ -687,24 +705,118 @@ function PlanTab({
                 </div>
               )}
             </CardContent>
-          </Card>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          </Card>          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <Card>
               <CardContent className="p-0">
-                <p className="border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Proposed train services</p>
+                <p className="border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Proposed train services · click a row to edit
+                </p>
                 <table className="w-full text-sm">
                   <tbody className="divide-y divide-border">
-                    {plan.trains.map((t) => (
-                      <tr key={`${t.train_number}-${t.section_code}`}>
-                        <td className="px-4 py-2.5 font-mono text-xs">{t.train_number}</td>
-                        <td className="px-3 py-2.5 font-medium">{t.name}</td>
-                        <td className="px-3 py-2.5 text-xs">{t.section_code}</td>
-                        <td className="px-3 py-2.5 text-xs capitalize">{t.priority}</td>
-                        <td className="px-3 py-2.5 text-xs capitalize">{t.frequency}</td>
-                        <td className="px-4 py-2.5 font-mono text-xs">{t.departure}–{t.arrival}</td>
-                      </tr>
-                    ))}
+                    {plan.trains.map((t, i) =>
+                      editTrainIdx === i ? (
+                        <tr key={`${t.train_number}-${t.section_code}`} className="bg-primary/5">
+                          <td colSpan={6} className="px-4 py-3">
+                            <div className="grid grid-cols-2 gap-2">
+                              <Input
+                                value={t.train_number}
+                                onChange={(e) => patchPlanTrain(i, { train_number: e.target.value })}
+                                aria-label="Train number"
+                                className="font-mono text-xs"
+                              />
+                              <Input
+                                value={t.name}
+                                onChange={(e) => patchPlanTrain(i, { name: e.target.value })}
+                                aria-label="Service name"
+                                className="text-xs"
+                              />
+                              <Select
+                                value={t.section_code}
+                                onChange={(e) => patchPlanTrain(i, { section_code: e.target.value })}
+                                aria-label="Section"
+                                className="text-xs"
+                              >
+                                {sections.map((s) => (
+                                  <option key={s.id} value={s.code}>
+                                    {s.code} — {s.name}
+                                  </option>
+                                ))}
+                              </Select>
+                              <Select
+                                value={t.priority}
+                                onChange={(e) => patchPlanTrain(i, { priority: e.target.value })}
+                                aria-label="Priority"
+                                className="text-xs"
+                              >
+                                {PRIORITIES.map((p) => (
+                                  <option key={p.value} value={p.value}>{p.label}</option>
+                                ))}
+                              </Select>
+                              <Select
+                                value={t.frequency}
+                                onChange={(e) => patchPlanTrain(i, { frequency: e.target.value })}
+                                aria-label="Frequency"
+                                className="text-xs"
+                              >
+                                {FREQUENCIES.map((f) => (
+                                  <option key={f.value} value={f.value}>{f.label}</option>
+                                ))}
+                              </Select>
+                              <div className="flex items-center gap-1">
+                                <Input
+                                  type="time"
+                                  value={t.departure}
+                                  onChange={(e) => patchPlanTrain(i, { departure: e.target.value })}
+                                  aria-label="Departure"
+                                  className="font-mono text-xs"
+                                />
+                                <Input
+                                  type="time"
+                                  value={t.arrival}
+                                  onChange={(e) => patchPlanTrain(i, { arrival: e.target.value })}
+                                  aria-label="Arrival"
+                                  className="font-mono text-xs"
+                                />
+                              </div>
+                            </div>
+                            <div className="mt-2 flex justify-end">
+                              <Button size="sm" variant="outline" onClick={() => setEditTrainIdx(null)}>
+                                Done
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        <tr
+                          key={`${t.train_number}-${t.section_code}`}
+                          className="cursor-pointer hover:bg-muted/40"
+                          onClick={() => {
+                            setEditTrainIdx(i)
+                            setEditBlockIdx(null)
+                          }}
+                        >
+                          <td className="px-4 py-2.5 font-mono text-xs">{t.train_number}</td>
+                          <td className="max-w-[140px] truncate px-3 py-2.5 font-medium">{t.name}</td>
+                          <td className="px-3 py-2.5 text-xs">{t.section_code}</td>
+                          <td className="px-3 py-2.5 text-xs capitalize">{t.priority}</td>
+                          <td className="px-3 py-2.5 text-xs capitalize">{t.frequency}</td>
+                          <td className="px-4 py-2.5 text-right font-mono text-xs">
+                            {t.departure}–{t.arrival}
+                            <button
+                              type="button"
+                              className="ml-2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-conflict"
+                              aria-label={`Remove ${t.train_number} from plan`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                removePlanTrain(i)
+                              }}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ),
+                    )}
                     {plan.trains.length === 0 && (
                       <tr>
                         <td className="px-4 py-6 text-center text-xs text-muted-foreground" colSpan={6}>
@@ -718,17 +830,97 @@ function PlanTab({
             </Card>
             <Card>
               <CardContent className="p-0">
-                <p className="border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Proposed maintenance windows</p>
+                <p className="border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Proposed maintenance windows · click a row to edit
+                </p>
                 <table className="w-full text-sm">
                   <tbody className="divide-y divide-border">
-                    {plan.blocks.map((b) => (
-                      <tr key={`${b.title}-${b.section_code}`}>
-                        <td className="px-4 py-2.5 font-medium">{b.title}</td>
-                        <td className="px-3 py-2.5 text-xs">{b.section_code}</td>
-                        <td className="px-3 py-2.5 font-mono text-xs">{b.start}–{b.end}</td>
-                        <td className="px-4 py-2.5 text-xs capitalize">{b.urgency}</td>
-                      </tr>
-                    ))}
+                    {plan.blocks.map((b, i) =>
+                      editBlockIdx === i ? (
+                        <tr key={`${b.title}-${b.section_code}`} className="bg-primary/5">
+                          <td colSpan={4} className="px-4 py-3">
+                            <div className="grid grid-cols-2 gap-2">
+                              <Input
+                                value={b.title}
+                                onChange={(e) => patchPlanBlock(i, { title: e.target.value })}
+                                aria-label="Block title"
+                                className="col-span-2 text-xs"
+                              />
+                              <Select
+                                value={b.section_code}
+                                onChange={(e) => patchPlanBlock(i, { section_code: e.target.value })}
+                                aria-label="Section"
+                                className="text-xs"
+                              >
+                                {sections.map((s) => (
+                                  <option key={s.id} value={s.code}>
+                                    {s.code} — {s.name}
+                                  </option>
+                                ))}
+                              </Select>
+                              <Select
+                                value={b.urgency}
+                                onChange={(e) => patchPlanBlock(i, { urgency: e.target.value })}
+                                aria-label="Urgency"
+                                className="text-xs"
+                              >
+                                <option value="low">low</option>
+                                <option value="medium">medium</option>
+                                <option value="high">high</option>
+                              </Select>
+                              <div className="col-span-2 flex items-center gap-1">
+                                <Input
+                                  type="time"
+                                  value={b.start}
+                                  onChange={(e) => patchPlanBlock(i, { start: e.target.value })}
+                                  aria-label="Block start"
+                                  className="font-mono text-xs"
+                                />
+                                <Input
+                                  type="time"
+                                  value={b.end}
+                                  onChange={(e) => patchPlanBlock(i, { end: e.target.value })}
+                                  aria-label="Block end"
+                                  className="font-mono text-xs"
+                                />
+                              </div>
+                            </div>
+                            <div className="mt-2 flex justify-end">
+                              <Button size="sm" variant="outline" onClick={() => setEditBlockIdx(null)}>
+                                Done
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        <tr
+                          key={`${b.title}-${b.section_code}`}
+                          className="cursor-pointer hover:bg-muted/40"
+                          onClick={() => {
+                            setEditBlockIdx(i)
+                            setEditTrainIdx(null)
+                          }}
+                        >
+                          <td className="max-w-[160px] truncate px-4 py-2.5 font-medium">{b.title}</td>
+                          <td className="px-3 py-2.5 text-xs">{b.section_code}</td>
+                          <td className="px-3 py-2.5 font-mono text-xs">{b.start}–{b.end}</td>
+                          <td className="px-4 py-2.5 text-right text-xs capitalize">
+                            {b.urgency}
+                            <button
+                              type="button"
+                              className="ml-2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-conflict"
+                              aria-label={`Remove ${b.title} from plan`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                removePlanBlock(i)
+                              }}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ),
+                    )}
                     {plan.blocks.length === 0 && (
                       <tr>
                         <td className="px-4 py-6 text-center text-xs text-muted-foreground" colSpan={4}>
