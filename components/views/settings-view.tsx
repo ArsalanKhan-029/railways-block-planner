@@ -40,7 +40,7 @@ function Toggle({ label, desc, defaultOn }: { label: string; desc: string; defau
   )
 }
 
-export function SettingsView({ role, email }: { role: Role; email: string }) {
+export function SettingsView({ role, email, displayName }: { role: Role; email: string; displayName?: string }) {
   return (
     <div className="grid max-w-4xl grid-cols-1 gap-6 lg:grid-cols-2">
       <Card>
@@ -51,7 +51,7 @@ export function SettingsView({ role, email }: { role: Role; email: string }) {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="s-name">Display name</Label>
-            <Input id="s-name" defaultValue="Arjun Mehta" />
+            <Input id="s-name" defaultValue={displayName ?? email.split('@')[0]} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="s-email">Email</Label>

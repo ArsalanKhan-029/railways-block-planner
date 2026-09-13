@@ -1,29 +1,38 @@
 'use client'
 
 import { useState } from 'react'
-import { TrainFront, ShieldCheck, ArrowRight } from 'lucide-react'
+import { TrainFront, ShieldCheck, Loader2, KeyRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select } from '@/components/ui/select'
-import type { Role } from '@/lib/mock-data'
+import { useAuth } from '@/lib/auth'
 
-const ROLES: Role[] = ['Admin', 'Section Controller', 'Maintenance Engineer', 'Viewer']
+/**
+ * Single sign-in form: username (or email) + password against Supabase Auth.
+ * No self sign-up — every account is issued by the administrator.
+ */
+export function LoginScreen() {
+  const { signIn } = useAuth()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-const ROLE_BLURB: Record<Role, string> = {
-  Admin: 'Full access — users, audit log, global optimisation settings.',
-  'Section Controller': 'Approve blocks, resolve conflicts, run the AI planner.',
-  'Maintenance Engineer': 'Raise block requests and report field issues.',
-  Viewer: 'Read-only dashboards and analytics.',
-}
-
-export function LoginScreen({ onLogin }: { onLogin: (role: Role, email: string) => void }) {
-  const [email, setEmail] = useState('arjun.mehta@ir.gov.in')
-  const [role, setRole] = useState<Role>('Admin')
-
-  function submit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    onLogin(role, email)
+    const fd = new FormData(e.currentTarget)
+    const handle = String(fd.get('username') || '')
+    const password = String(fd.get('password') || '')
+    setBusy(true)
+    setError(null)
+    const res = await signIn(handle, password)
+    if (!res.ok) {
+      setBusy(false)
+      setError(
+        res.error === 'Invalid login credentials'
+          ? 'Invalid username or password'
+          : (res.error ?? 'Sign-in failed'),
+      )
+    }
+    // On success the auth session flips the app into the dashboard.
   }
 
   return (
@@ -72,7 +81,7 @@ export function LoginScreen({ onLogin }: { onLogin: (role: Role, email: string) 
 
       {/* Form panel */}
       <section className="flex items-center justify-center px-6 py-12">
-        <form onSubmit={submit} className="w-full max-w-sm">
+        <div className="w-full max-w-sm">
           <div className="mb-8 flex items-center gap-2.5 lg:hidden">
             <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <TrainFront className="size-5" />
@@ -82,53 +91,47 @@ export function LoginScreen({ onLogin }: { onLogin: (role: Role, email: string) 
 
           <h2 className="text-2xl font-semibold tracking-tight">Sign in</h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Access the control room dashboard for your section.
+            Access the control room dashboard.
           </p>
 
-          <div className="mt-8 flex flex-col gap-4">
+          <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Official email</Label>
+              <Label htmlFor="username">Username or email</Label>
               <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@ir.gov.in"
+                id="username"
+                name="username"
+                autoComplete="username"
+                placeholder="issued by your administrator"
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
                 required
               />
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" defaultValue="demo-access" required />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="role">Sign in as (demo role)</Label>
-              <Select
-                id="role"
-                value={role}
-                onChange={(e) => setRole(e.target.value as Role)}
-              >
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </Select>
-              <p className="text-xs text-muted-foreground">{ROLE_BLURB[role]}</p>
-            </div>
-
-            <Button type="submit" size="lg" className="mt-2 w-full">
-              Continue to dashboard
-              <ArrowRight />
+            <Button type="submit" size="lg" className="mt-2 w-full" disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}
+              Sign in
             </Button>
-          </div>
+            <p className="text-center text-xs text-muted-foreground">
+              Accounts are issued by your administrator — ask them if you
+              don&apos;t have one yet.
+            </p>
+          </form>
 
-          <p className="mt-6 text-center text-xs text-muted-foreground">
-            Role selection is a demo control — production uses SSO-mapped roles.
-          </p>
-        </form>
+          {error && (
+            <p className="mt-4 rounded-lg border border-conflict/30 bg-conflict/5 p-3 text-xs leading-relaxed text-conflict">
+              {error}
+            </p>
+          )}
+        </div>
       </section>
     </main>
   )

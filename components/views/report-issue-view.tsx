@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Upload,
   MapPin,
@@ -13,11 +13,13 @@ import {
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { COMPLAINTS, SECTIONS, type Complaint } from '@/lib/mock-data'
+import type { Complaint } from '@/lib/mock-data'
+import { toComplaints } from '@/lib/mappers'
+import { insertComplaint, uploadComplaintPhoto } from '@/lib/api'
+import { useRailData } from '@/lib/use-rail-data'
 import { cn } from '@/lib/utils'
 
 const CATEGORIES: Complaint['category'][] = [
@@ -36,38 +38,102 @@ const STATUS_VARIANT = {
   Resolved: 'success',
 } as const
 
+interface Coords {
+  lat: number | null
+  lon: number | null
+  accuracy: number | null
+  failed?: boolean
+}
+
 export function ReportIssueView() {
+  const { sections, complaints, refresh, loading, error } = useRailData()
   const [severity, setSeverity] = useState<(typeof SEVERITIES)[number]>('Medium')
+  const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photo, setPhoto] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
-  const [location, setLocation] = useState<string>('')
+  const [coords, setCoords] = useState<Coords>({ lat: null, lon: null, accuracy: null })
   const [locating, setLocating] = useState(true)
-  const [submitted, setSubmitted] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [submittedRef, setSubmittedRef] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('All')
   const fileRef = useRef<HTMLInputElement>(null)
 
+  // Browser geolocation (falls back gracefully if denied / unavailable)
   useEffect(() => {
-    const t = setTimeout(() => {
-      setLocation('19.0760° N, 72.8777° E · nr. km 142, Mumbai–Pune Section')
-      setLocating(false)
-    }, 2000)
-    return () => clearTimeout(t)
+    let done = false
+    const finish = (c: Coords) => {
+      if (!done) {
+        setCoords(c)
+        setLocating(false)
+        done = true
+      }
+    }
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) =>
+          finish({
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          }),
+        () => finish({ lat: null, lon: null, accuracy: null, failed: true }),
+        { enableHighAccuracy: true, timeout: 8000 },
+      )
+    } else {
+      finish({ lat: null, lon: null, accuracy: null, failed: true })
+    }
+    return () => {
+      done = true
+    }
   }, [])
 
   function handleFile(file?: File) {
     if (!file) return
-    const url = URL.createObjectURL(file)
-    setPhoto(url)
+    setPhotoFile(file)
+    setPhoto(URL.createObjectURL(file))
   }
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    setSubmitted(true)
-    setTimeout(() => setSubmitted(false), 3500)
+    const fd = new FormData(e.currentTarget)
+    const category = String(fd.get('category') || 'Other')
+    const sectionId = String(fd.get('section') || '')
+    const description = String(fd.get('desc') || '').trim()
+    if (!description) return
+
+    setSubmitting(true)
+    try {
+      const photoUrl = photoFile ? await uploadComplaintPhoto(photoFile) : null
+      const { data, error: insertError } = await insertComplaint({
+        section_id: sectionId || null,
+        category,
+        description,
+        severity: severity.toLowerCase() as 'low' | 'medium' | 'high',
+        photo_url: photoUrl,
+        latitude: coords.lat,
+        longitude: coords.lon,
+      })
+      if (insertError) throw insertError
+      const shortId = data?.[0]?.id ? String(data[0].id).slice(0, 8).toUpperCase() : null
+      setSubmittedRef(shortId ? `#IR-${shortId}` : null)
+      ;(e.target as HTMLFormElement).reset()
+      setPhoto(null)
+      setPhotoFile(null)
+      refresh()
+    } catch {
+      setSubmittedRef(null)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
+  const mapped = useMemo(() => toComplaints(complaints, sections), [complaints, sections])
   const filtered =
-    statusFilter === 'All' ? COMPLAINTS : COMPLAINTS.filter((c) => c.status === statusFilter)
+    statusFilter === 'All' ? mapped : mapped.filter((c) => c.status === statusFilter)
+
+  const locationText = coords.failed
+    ? 'Location unavailable — permission denied or unsupported.'
+    : `${coords.lat?.toFixed(4) ?? '—'}° ${coords.lat != null && coords.lat >= 0 ? 'N' : 'S'}, ${coords.lon?.toFixed(4) ?? '—'}° ${coords.lon != null && coords.lon >= 0 ? 'E' : 'W'}`
 
   return (
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,420px)_1fr]">
@@ -79,17 +145,23 @@ export function ReportIssueView() {
             Field reports are auto-linked to affected sections &amp; blocks.
           </p>
 
-          {submitted && (
+          {error && (
+            <div className="mt-4 rounded-lg border border-conflict/30 bg-conflict/10 p-3 text-sm text-conflict">
+              Database error: {error}
+            </div>
+          )}
+
+          {submittedRef && (
             <div className="mt-4 flex items-center gap-2 rounded-lg border border-approved/30 bg-approved/10 p-3 text-sm text-approved">
               <CircleCheck className="size-4" />
-              Issue submitted — reference #IR-5590 created.
+              Issue submitted — reference {submittedRef} created.
             </div>
           )}
 
           <form onSubmit={submit} className="mt-5 space-y-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="category">Category</Label>
-              <Select id="category" defaultValue="Track Defect">
+              <Select id="category" name="category" defaultValue="Track Defect">
                 {CATEGORIES.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -100,9 +172,9 @@ export function ReportIssueView() {
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="section">Section</Label>
-              <Select id="section" defaultValue={SECTIONS[0].name}>
-                {SECTIONS.map((s) => (
-                  <option key={s.id} value={s.name}>
+              <Select id="section" name="section" defaultValue={sections[0]?.id ?? ''}>
+                {sections.map((s) => (
+                  <option key={s.id} value={s.id}>
                     {s.name}
                   </option>
                 ))}
@@ -111,7 +183,7 @@ export function ReportIssueView() {
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="desc">Description</Label>
-              <Textarea id="desc" placeholder="Describe the fault, location detail and any immediate risk…" required />
+              <Textarea id="desc" name="desc" placeholder="Describe the fault, location detail and any immediate risk…" required />
             </div>
 
             {/* Photo upload */}
@@ -123,7 +195,10 @@ export function ReportIssueView() {
                   <img src={photo} alt="Uploaded evidence preview" className="h-40 w-full object-cover" />
                   <button
                     type="button"
-                    onClick={() => setPhoto(null)}
+                    onClick={() => {
+                      setPhoto(null)
+                      setPhotoFile(null)
+                    }}
                     className="absolute right-2 top-2 rounded-md bg-foreground/70 p-1 text-background hover:bg-foreground"
                     aria-label="Remove photo"
                   >
@@ -183,11 +258,15 @@ export function ReportIssueView() {
                       <MapPin className="size-6 text-train" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium">Location captured</p>
-                      <p className="text-xs text-muted-foreground">{location}</p>
-                      <span className="mt-1.5 inline-flex items-center gap-1 text-xs text-approved">
-                        <CircleCheck className="size-3" /> GPS accuracy ±8m
-                      </span>
+                      <p className="text-sm font-medium">
+                        {coords.failed ? 'Location not captured' : 'Location captured'}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{locationText}</p>
+                      {!coords.failed && (
+                        <span className="mt-1.5 inline-flex items-center gap-1 text-xs text-approved">
+                          <CircleCheck className="size-3" /> GPS accuracy ±{Math.round(coords.accuracy ?? 0)}m
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
@@ -223,8 +302,9 @@ export function ReportIssueView() {
               </div>
             </div>
 
-            <Button type="submit" className="w-full" size="lg">
-              Submit issue report
+            <Button type="submit" className="w-full" size="lg" disabled={submitting || loading}>
+              {submitting && <Loader2 className="animate-spin" />}
+              {submitting ? 'Submitting…' : 'Submit issue report'}
             </Button>
           </form>
         </CardContent>
@@ -270,9 +350,18 @@ export function ReportIssueView() {
                 {filtered.map((c) => (
                   <tr key={c.id} className="hover:bg-muted/40">
                     <td className="px-5 py-3">
-                      <div className="flex size-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                        <ImageIcon className="size-4" />
-                      </div>
+                      {c.photoUrl ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={c.photoUrl}
+                          alt="Complaint evidence"
+                          className="size-9 rounded-md border border-border object-cover"
+                        />
+                      ) : (
+                        <div className="flex size-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                          <ImageIcon className="size-4" />
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       <p className="font-medium">{c.category}</p>

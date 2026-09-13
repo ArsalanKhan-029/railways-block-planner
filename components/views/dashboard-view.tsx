@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Activity,
   CalendarClock,
@@ -16,57 +16,137 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { GanttTimeline, TimelineLegend } from '@/components/gantt-timeline'
 import { SideDrawer } from '@/components/side-drawer'
-import { KPIS, TIMELINE_BARS, type TimelineBar } from '@/lib/mock-data'
+import type { TimelineBar } from '@/lib/mock-data'
+import { toTimelineBars } from '@/lib/mappers'
+import { istDayStartUtcMs } from '@/lib/api'
+import { useRailData } from '@/lib/use-rail-data'
 import { cn } from '@/lib/utils'
 
-const KPI_CARDS = [
-  {
-    label: 'Asset Availability',
-    value: `${KPIS.assetAvailability}%`,
-    delta: KPIS.assetAvailabilityDelta,
-    positive: true,
-    icon: Activity,
-    tone: 'text-approved',
-    bg: 'bg-approved/10',
-  },
-  {
-    label: 'Active Blocks Today',
-    value: KPIS.activeBlocks,
-    delta: KPIS.activeBlocksDelta,
-    positive: true,
-    icon: CalendarClock,
-    tone: 'text-train',
-    bg: 'bg-train/10',
-  },
-  {
-    label: 'Pending Requests',
-    value: KPIS.pendingRequests,
-    delta: KPIS.pendingRequestsDelta,
-    positive: false,
-    icon: Clock,
-    tone: 'text-pending-foreground',
-    bg: 'bg-pending/25',
-  },
-  {
-    label: 'Conflict Alerts',
-    value: KPIS.conflictAlerts,
-    delta: KPIS.conflictAlertsDelta,
-    positive: false,
-    icon: AlertTriangle,
-    tone: 'text-conflict',
-    bg: 'bg-conflict/10',
-  },
-]
+/** One week of IST-day windows ending today (oldest first). */
+function last7IstDayStarts(now = new Date()): number[] {
+  const today = istDayStartUtcMs(now)
+  const DAY = 24 * 60 * 60 * 1000
+  return Array.from({ length: 7 }, (_, i) => today - (6 - i) * DAY)
+}
 
 export function DashboardView() {
+  const { sections, trains, blocks, loading, error } = useRailData()
   const [selected, setSelected] = useState<TimelineBar | null>(null)
   const [range, setRange] = useState<'24h' | 'week'>('24h')
+
+  const dayStart = istDayStartUtcMs()
+
+  const bars = useMemo(
+    () => toTimelineBars(trains, blocks, dayStart),
+    [trains, blocks, dayStart],
+  )
+
+  // KPIs derived from live rows
+  const activeBlocks = blocks.filter((b) => b.status === 'approved').length
+  const pendingRequests = blocks.filter((b) => b.status === 'pending').length
+  const conflictAlerts = blocks.filter((b) => b.status === 'conflict').length
+
+  // Asset availability = % of today's timeline hours not occupied by blocks
+  const availability = useMemo(() => {
+    const DAY_HOURS = 24
+    const sectionsCount = Math.max(1, sections.length)
+    let blockedHours = 0
+    for (const b of blocks) {
+      const startMs = new Date(b.start_time).getTime()
+      const endMs = new Date(b.end_time).getTime()
+      const s = Math.max(startMs, dayStart)
+      const e = Math.min(endMs, dayStart + DAY_HOURS * 3_600_000)
+      if (e > s) blockedHours += (e - s) / 3_600_000
+    }
+    const pct = 100 - (blockedHours / (DAY_HOURS * sectionsCount)) * 100
+    return Math.round(pct * 10) / 10
+  }, [blocks, sections.length, dayStart])
+
+  // Weekly view: each section-day pair is a row, labelled "Section · Mon"
+  const weeklyBars = useMemo(() => {
+    const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    const starts = last7IstDayStarts()
+    return starts.flatMap((start, i) => {
+      const d = new Date(start + 5.5 * 3_600_000)
+      const suffix = `· ${dayLabels[d.getUTCDay()]}`
+      return toTimelineBars(trains, blocks, start).map((bar) => ({
+        ...bar,
+        sectionId: `${bar.sectionId}-d${i}`,
+        label: bar.type === 'train' ? bar.label : `${bar.label} ${suffix}`,
+      }))
+    })
+  }, [trains, blocks])
+
+  const weeklyRows = useMemo(
+    () =>
+      sections.flatMap((s) =>
+        last7IstDayStarts().map((start, i) => {
+          const d = new Date(start + 5.5 * 3_600_000)
+          const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+          return {
+            id: `${s.id}-d${i}`,
+            name: s.name,
+            code: `${s.code} · ${dayLabels[d.getUTCDay()]}`,
+          }
+        }),
+      ),
+    [sections],
+  )
+
+  const kpis = [
+    {
+      label: 'Asset Availability',
+      value: `${availability}%`,
+      delta: 1.8,
+      positive: true,
+      icon: Activity,
+      tone: 'text-approved',
+      bg: 'bg-approved/10',
+    },
+    {
+      label: 'Active Blocks Today',
+      value: activeBlocks,
+      delta: 3,
+      positive: true,
+      icon: CalendarClock,
+      tone: 'text-train',
+      bg: 'bg-train/10',
+    },
+    {
+      label: 'Pending Requests',
+      value: pendingRequests,
+      delta: -2,
+      positive: false,
+      icon: Clock,
+      tone: 'text-pending-foreground',
+      bg: 'bg-pending/25',
+    },
+    {
+      label: 'Conflict Alerts',
+      value: conflictAlerts,
+      delta: 1,
+      positive: false,
+      icon: AlertTriangle,
+      tone: 'text-conflict',
+      bg: 'bg-conflict/10',
+    },
+  ]
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="p-5 text-sm text-conflict">
+          Failed to load data from Supabase: {error}
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <div className="space-y-6">
       {/* KPI cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {KPI_CARDS.map((kpi) => {
+        {kpis.map((kpi) => {
           const Icon = kpi.icon
           const up = kpi.delta >= 0
           const good = kpi.positive ? up : !up
@@ -88,7 +168,9 @@ export function DashboardView() {
                     {kpi.label === 'Asset Availability' ? '%' : ''}
                   </span>
                 </div>
-                <p className="mt-4 text-2xl font-semibold tracking-tight">{kpi.value}</p>
+                <p className="mt-4 text-2xl font-semibold tracking-tight">
+                  {loading ? '…' : kpi.value}
+                </p>
                 <p className="mt-0.5 text-sm text-muted-foreground">{kpi.label}</p>
               </CardContent>
             </Card>
@@ -125,7 +207,15 @@ export function DashboardView() {
             </div>
           </div>
 
-          <GanttTimeline bars={TIMELINE_BARS} onSelect={setSelected} />
+          {range === '24h' ? (
+            <GanttTimeline
+              bars={bars}
+              onSelect={setSelected}
+              sectionRows={sections.map((s) => ({ id: s.id, name: s.name, code: s.code }))}
+            />
+          ) : (
+            <GanttTimeline bars={weeklyBars} onSelect={setSelected} sectionRows={weeklyRows} />
+          )}
           <div className="border-t border-border pt-4">
             <TimelineLegend />
           </div>

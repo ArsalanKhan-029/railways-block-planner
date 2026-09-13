@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import {
   Area,
   AreaChart,
@@ -15,13 +16,8 @@ import {
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import {
-  AVAILABILITY_TREND,
-  UTILIZATION_BY_SECTION,
-  OVERRUN_FREQUENCY,
-  COMPLAINTS_BY_CATEGORY,
-  SECTION_COMPARISON,
-} from '@/lib/mock-data'
+import { istDayStartUtcMs } from '@/lib/api'
+import { useRailData } from '@/lib/use-rail-data'
 
 const RATING_VARIANT: Record<string, 'success' | 'info' | 'warning' | 'danger'> = {
   Excellent: 'success',
@@ -51,7 +47,125 @@ function ChartTooltip({ active, payload, label }: any) {
   )
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+function ratingFor(availability: number): string {
+  if (availability >= 95) return 'Excellent'
+  if (availability >= 93) return 'Good'
+  if (availability >= 91) return 'Fair'
+  return 'Needs Attention'
+}
+
 export function AnalyticsView() {
+  const { sections, trains, blocks, complaints, loading } = useRailData()
+
+  const analytics = useMemo(() => {
+    const today = istDayStartUtcMs()
+
+    // Availability trend: % of section-hours free of blocks, per day (last 7 IST days)
+    const availabilityTrend = Array.from({ length: 7 }, (_, i) => {
+      const dayStart = today - (6 - i) * DAY_MS
+      const d = new Date(dayStart + 5.5 * 3_600_000)
+      let blockedHours = 0
+      for (const b of blocks) {
+        const s = Math.max(new Date(b.start_time).getTime(), dayStart)
+        const e = Math.min(new Date(b.end_time).getTime(), dayStart + DAY_MS)
+        if (e > s) blockedHours += (e - s) / 3_600_000
+      }
+      const capacityHours = 24 * Math.max(1, sections.length)
+      const availability =
+        Math.round((100 - (blockedHours / capacityHours) * 100) * 10) / 10
+      return {
+        day: DAY_LABELS[d.getUTCDay()],
+        availability,
+        target: 92,
+      }
+    })
+
+    // Utilisation: share of granted block time per section that falls on today
+    const utilizationBySection = sections.map((s) => {
+      const sectionBlocks = blocks.filter((b) => b.section_id === s.id)
+      const totalHrs = sectionBlocks.reduce(
+        (acc, b) => acc + (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 3_600_000,
+        0,
+      )
+      // % of the day's 24h window occupied by granted (approved) work, scaled
+      const approvedHrs = sectionBlocks
+        .filter((b) => b.status === 'approved')
+        .reduce(
+          (acc, b) => acc + (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 3_600_000,
+          0,
+        )
+      const utilization = totalHrs > 0 ? Math.round((approvedHrs / totalHrs) * 100) : 0
+      return { section: s.name.replace(' Section', '').replace('–', '–'), utilization }
+    })
+
+    // Overrun frequency: blocks running past their end_time bucketed per week —
+    // derived from conflict + rejected signals as a proxy per week of history
+    const overrunFrequency = Array.from({ length: 6 }, (_, i) => {
+      const weekStart = today - (5 - i) * 7 * DAY_MS
+      const weekEnd = weekStart + 7 * DAY_MS
+      const overruns = blocks.filter((b) => {
+        const t = new Date(b.created_at).getTime()
+        return t >= weekStart && t < weekEnd && (b.status === 'conflict' || b.status === 'rejected')
+      }).length
+      return { week: `W${i + 1}`, overruns }
+    })
+
+    // Complaint volume by category
+    const categoryBuckets: Record<string, number> = {
+      Track: 0,
+      Signal: 0,
+      Safety: 0,
+      Overrun: 0,
+      Other: 0,
+    }
+    for (const c of complaints) {
+      if (c.category.startsWith('Track')) categoryBuckets.Track++
+      else if (c.category.startsWith('Signal')) categoryBuckets.Signal++
+      else if (c.category.startsWith('Safety')) categoryBuckets.Safety++
+      else if (c.category.startsWith('Block')) categoryBuckets.Overrun++
+      else categoryBuckets.Other++
+    }
+    const complaintsByCategory = Object.entries(categoryBuckets).map(([category, count]) => ({
+      category,
+      count,
+    }))
+
+    // Section-wise comparison from live counts
+    const sectionComparison = sections.map((s) => {
+      const sectionBlocks = blocks.filter((b) => b.section_id === s.id)
+      let blockedHours = 0
+      for (const b of sectionBlocks) {
+        const st = Math.max(new Date(b.start_time).getTime(), today)
+        const e = Math.min(new Date(b.end_time).getTime(), today + DAY_MS)
+        if (e > st) blockedHours += (e - st) / 3_600_000
+      }
+      const availability =
+        Math.round((100 - (blockedHours / 24) * 100) * 10) / 10
+      const overruns = complaints.filter(
+        (c) => c.section_id === s.id && c.category === 'Block Overrun',
+      ).length
+      return {
+        section: s.name,
+        availability,
+        blocks: sectionBlocks.length,
+        overruns,
+        rating: ratingFor(availability),
+      }
+    })
+
+    return {
+      availabilityTrend,
+      utilizationBySection,
+      overrunFrequency,
+      complaintsByCategory,
+      sectionComparison,
+      trainCount: trains.length,
+    }
+  }, [sections, trains, blocks, complaints])
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -63,7 +177,7 @@ export function AnalyticsView() {
           </CardHeader>
           <CardContent className="pt-2">
             <ResponsiveContainer width="100%" height={240}>
-              <AreaChart data={AVAILABILITY_TREND} margin={{ left: -20, right: 8, top: 4 }}>
+              <AreaChart data={analytics.availabilityTrend} margin={{ left: -20, right: 8, top: 4 }}>
                 <defs>
                   <linearGradient id="availFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
@@ -104,7 +218,7 @@ export function AnalyticsView() {
           </CardHeader>
           <CardContent className="pt-2">
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={UTILIZATION_BY_SECTION} margin={{ left: -20, right: 8, top: 4 }}>
+              <BarChart data={analytics.utilizationBySection} margin={{ left: -20, right: 8, top: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis dataKey="section" {...axisProps} interval={0} angle={-12} textAnchor="end" height={48} />
                 <YAxis {...axisProps} />
@@ -119,14 +233,16 @@ export function AnalyticsView() {
         <Card>
           <CardHeader>
             <CardTitle>Block Overrun Frequency</CardTitle>
-            <CardDescription>Overruns per week (trending down)</CardDescription>
+            <CardDescription>
+              Flagged blocks per week{loading ? '' : ` · ${analytics.trainCount} services tracked`}
+            </CardDescription>
           </CardHeader>
           <CardContent className="pt-2">
             <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={OVERRUN_FREQUENCY} margin={{ left: -20, right: 8, top: 4 }}>
+              <LineChart data={analytics.overrunFrequency} margin={{ left: -20, right: 8, top: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis dataKey="week" {...axisProps} />
-                <YAxis {...axisProps} />
+                <YAxis {...axisProps} allowDecimals={false} />
                 <Tooltip content={<ChartTooltip />} />
                 <Line
                   type="monotone"
@@ -145,17 +261,17 @@ export function AnalyticsView() {
         <Card>
           <CardHeader>
             <CardTitle>Complaint Volume by Category</CardTitle>
-            <CardDescription>Reports logged this quarter</CardDescription>
+            <CardDescription>Reports logged in the database</CardDescription>
           </CardHeader>
           <CardContent className="pt-2">
             <ResponsiveContainer width="100%" height={240}>
               <BarChart
-                data={COMPLAINTS_BY_CATEGORY}
+                data={analytics.complaintsByCategory}
                 layout="vertical"
                 margin={{ left: 12, right: 12, top: 4 }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                <XAxis type="number" {...axisProps} />
+                <XAxis type="number" {...axisProps} allowDecimals={false} />
                 <YAxis type="category" dataKey="category" width={64} {...axisProps} />
                 <Tooltip content={<ChartTooltip />} cursor={{ fill: 'var(--muted)' }} />
                 <Bar dataKey="count" name="Complaints" fill="var(--chart-3)" radius={[0, 4, 4, 0]} />
@@ -184,7 +300,7 @@ export function AnalyticsView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {SECTION_COMPARISON.map((s) => (
+                {analytics.sectionComparison.map((s) => (
                   <tr key={s.section} className="hover:bg-muted/40">
                     <td className="px-5 py-3 font-medium">{s.section}</td>
                     <td className="px-3 py-3">

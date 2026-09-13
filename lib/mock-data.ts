@@ -50,11 +50,13 @@ export interface Complaint {
   id: string
   category: 'Track Defect' | 'Signal Fault' | 'Safety Hazard' | 'Block Overrun' | 'Other'
   section: string
+  sectionId?: string
   location: string
   severity: 'Low' | 'Medium' | 'High'
   status: 'New' | 'Linked to Block' | 'Resolved'
   date: string
   description: string
+  photoUrl?: string
 }
 
 export interface ManagedUser {
@@ -63,6 +65,7 @@ export interface ManagedUser {
   email: string
   role: Role
   sections: string[]
+  sectionIds: string[]
   status: 'Active' | 'Pending' | 'Revoked'
 }
 
@@ -150,12 +153,12 @@ export const COMPLAINTS: Complaint[] = [
 ]
 
 export const USERS: ManagedUser[] = [
-  { id: 'u1', name: 'Arjun Mehta', email: 'arjun.mehta@ir.gov.in', role: 'Admin', sections: ['Mumbai–Pune Section', 'Delhi–Agra Section'], status: 'Active' },
-  { id: 'u2', name: 'Sunita Nair', email: 's.nair@ir.gov.in', role: 'Section Controller', sections: ['Delhi–Agra Section'], status: 'Active' },
-  { id: 'u3', name: 'Kartik Raman', email: 'k.raman@ir.gov.in', role: 'Maintenance Engineer', sections: ['Chennai–Bengaluru Section'], status: 'Active' },
-  { id: 'u4', name: 'Vikram Sharma', email: 'v.sharma@ir.gov.in', role: 'Maintenance Engineer', sections: ['Lucknow–Kanpur Section'], status: 'Pending' },
-  { id: 'u5', name: 'Priya Ghosh', email: 'p.ghosh@ir.gov.in', role: 'Section Controller', sections: ['Howrah–Bardhaman Section'], status: 'Active' },
-  { id: 'u6', name: 'Manoj Patel', email: 'm.patel@ir.gov.in', role: 'Section Controller', sections: ['Ahmedabad–Vadodara Section'], status: 'Revoked' },
+  { id: 'u1', name: 'Arjun Mehta', email: 'arjun.mehta@ir.gov.in', role: 'Admin', sections: ['Mumbai–Pune Section', 'Delhi–Agra Section'], sectionIds: ['mp', 'da'], status: 'Active' },
+  { id: 'u2', name: 'Sunita Nair', email: 's.nair@ir.gov.in', role: 'Section Controller', sections: ['Delhi–Agra Section'], sectionIds: ['da'], status: 'Active' },
+  { id: 'u3', name: 'Kartik Raman', email: 'k.raman@ir.gov.in', role: 'Maintenance Engineer', sections: ['Chennai–Bengaluru Section'], sectionIds: ['cb'], status: 'Active' },
+  { id: 'u4', name: 'Vikram Sharma', email: 'v.sharma@ir.gov.in', role: 'Maintenance Engineer', sections: ['Lucknow–Kanpur Section'], sectionIds: ['lk'], status: 'Pending' },
+  { id: 'u5', name: 'Priya Ghosh', email: 'p.ghosh@ir.gov.in', role: 'Section Controller', sections: ['Howrah–Bardhaman Section'], sectionIds: ['hb'], status: 'Active' },
+  { id: 'u6', name: 'Manoj Patel', email: 'm.patel@ir.gov.in', role: 'Section Controller', sections: ['Ahmedabad–Vadodara Section'], sectionIds: ['ak'], status: 'Revoked' },
 ]
 
 export const AUDIT_LOG: AuditEntry[] = [
