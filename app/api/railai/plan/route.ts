@@ -96,7 +96,7 @@ function heuristicPlan(sections: SnapSection[], trains: SnapTrain[], blocks: Sna
 }
 
 export async function POST(req: Request) {
-  let body: { sections?: SnapSection[]; trains?: SnapTrain[]; blocks?: SnapBlock[] }
+  let body: { sections?: SnapSection[]; trains?: SnapTrain[]; blocks?: SnapBlock[]; planType?: string }
   try {
     body = await req.json()
   } catch {
@@ -105,14 +105,24 @@ export async function POST(req: Request) {
   const sections = (body.sections ?? []).slice(0, 80)
   const trains = (body.trains ?? []).slice(0, 120)
   const blocks = (body.blocks ?? []).slice(0, 40)
+  // which part of the schedule the admin wants planned
+  const planType = body.planType === 'trains' || body.planType === 'blocks' ? body.planType : 'both'
 
   const key = process.env.GROQ_API_KEY
   if (key) {
     try {
+      const wantTrains = planType !== 'blocks'
+      const wantBlocks = planType !== 'trains'
+      const scope =
+        wantTrains && wantBlocks
+          ? `Propose: 2-4 NEW train services on sections that have capacity (varying priority: express/mail/passenger/freight; sensible daily/weekly frequency), AND 2-3 maintenance block windows on sections without active conflicts, placed in low-traffic night windows.`
+          : wantTrains
+            ? `Propose ONLY new train services (no maintenance blocks): 2-4 new services on sections that have capacity, varying priority express/mail/passenger/freight with sensible daily/weekly frequency.`
+            : `Propose ONLY maintenance block windows (no new trains): 2-3 windows on sections without active conflicts, placed in low-traffic night hours.`
       const prompt =
         `You are RailAI, the planning engine of an Indian Railways control room. Generate an optimized schedule plan.\n` +
         `SECTIONS: ${JSON.stringify(sections)}\nCURRENT TRAINS (number,name,section,start,end,priority,frequency,status): ${JSON.stringify(trains)}\nBLOCKS (title,section,start,end,status): ${JSON.stringify(blocks)}\n\n` +
-        `Propose: 2-4 NEW train services on sections that have capacity (varying priority: express/mail/passenger/freight; sensible daily/weekly frequency), AND 2-3 maintenance block windows on sections without active conflicts, placed in low-traffic night windows.\n` +
+        `${scope}\n` +
         `Rules: new services must not depart within 60 min of existing ones on the same section; blocks must not overlap any train's run time on that section; times are IST "HH:MM"; journeys 7-10h.\n` +
         `Reply with STRICT JSON only, no markdown:\n{"summary":"<3-4 sentences explaining the reasoning and trade-offs>","trains":[{"train_number":"2xxxx","name":"...","section_code":"XXX-YYY","priority":"express|mail|passenger|freight","frequency":"daily|weekly|weekdays|weekends|specific","departure":"HH:MM","arrival":"HH:MM"}],"blocks":[{"title":"...","section_code":"XXX-YYY","start":"HH:MM","end":"HH:MM","urgency":"low|medium|high"}]}`
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -156,8 +166,8 @@ export async function POST(req: Request) {
               }))
             return Response.json({
               summary: String(parsed.summary ?? '').slice(0, 1200),
-              trains: cleanTrains,
-              blocks: cleanBlocks,
+              trains: planType === 'blocks' ? [] : cleanTrains,
+              blocks: planType === 'trains' ? [] : cleanBlocks,
               provider: 'groq',
             })
           }
@@ -171,5 +181,10 @@ export async function POST(req: Request) {
   }
 
   const { trains: t2, blocks: b2, summary } = heuristicPlan(sections, trains, blocks)
-  return Response.json({ trains: t2, blocks: b2, summary, provider: 'heuristic' })
+  return Response.json({
+    trains: planType === 'blocks' ? [] : t2,
+    blocks: planType === 'trains' ? [] : b2,
+    summary,
+    provider: 'heuristic',
+  })
 }

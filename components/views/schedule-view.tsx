@@ -579,6 +579,8 @@ function PlanTab({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [applied, setApplied] = useState<string | null>(null)
+  // which part of the schedule the AI should plan
+  const [planType, setPlanType] = useState<'both' | 'trains' | 'blocks'>('both')
   // row-level editing of the proposed plan before approval
   const [editTrainIdx, setEditTrainIdx] = useState<number | null>(null)
   const [editBlockIdx, setEditBlockIdx] = useState<number | null>(null)
@@ -639,6 +641,7 @@ function PlanTab({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          planType,
           sections: sections.slice(0, 60).map((s) => ({ code: s.code, name: s.name })),
           trains: trains.slice(0, 100).map((t) => ({
             number: t.train_number,
@@ -720,9 +723,21 @@ function PlanTab({
               Analyzes current services, blocks and conflicts, then proposes new services + maintenance windows. Nothing is applied until you approve.
             </p>
           </div>
-          <Button onClick={generate} disabled={loading}>
-            {loading ? <Loader2 className="animate-spin" /> : <Sparkles className="size-4" />} Generate plan
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={planType}
+              onChange={(e) => setPlanType(e.target.value as 'both' | 'trains' | 'blocks')}
+              className="h-8 w-56 text-xs"
+              aria-label="Plan type"
+            >
+              <option value="both">Train schedule + Maintenance</option>
+              <option value="trains">Train schedule only</option>
+              <option value="blocks">Maintenance schedule only</option>
+            </Select>
+            <Button onClick={generate} disabled={loading}>
+              {loading ? <Loader2 className="animate-spin" /> : <Sparkles className="size-4" />} Generate plan
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
