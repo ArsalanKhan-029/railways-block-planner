@@ -302,7 +302,36 @@ function TrainServiceForm({
     setSaving(true)
     setError(null)
     if (editing) {
-      const { updateTrain } = await import('@/lib/api')
+      const { updateTrain, deleteTrain, insertTrainMultiTrip } = await import('@/lib/api')
+      const baseNumber = editing.train_number.replace(/-\d+$/, '')
+
+      // Trips count changed → regenerate the whole staggered series from this
+      // trip's (possibly edited) times: delete the old series, insert the new.
+      const oldTrips = editing.trips_per_day ?? 1
+      if (trips !== oldTrips) {
+        const siblings = trains.filter(
+          (t) =>
+            (t.train_number === baseNumber || t.train_number.startsWith(`${baseNumber}-`)) &&
+            t.section_id === editing.section_id,
+        )
+        // The edited row is part of the old series too — everything goes.
+        for (const sib of siblings) await deleteTrain(sib.id)
+        const { error: regenError } = await insertTrainMultiTrip({
+          section_id: sectionId,
+          train_number: baseNumber,
+          name: name.replace(/\s*\(Trip \d+\)$/, ''),
+          start_time: `${dep}:00`,
+          end_time: `${arr}:00`,
+          priority,
+          frequency,
+          trips_per_day: trips,
+        })
+        setSaving(false)
+        if (regenError) setError(regenError.message)
+        else onDone()
+        return
+      }
+
       const { error } = await updateTrain(editing.id, {
         section_id: sectionId,
         train_number: number,
@@ -382,19 +411,24 @@ function TrainServiceForm({
       </div>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="ts-trips">Trips per day</Label>
-        <Select id="ts-trips" value={String(trips)} onChange={(e) => setTrips(Number(e.target.value))} disabled={!!editing}>
+        <Select id="ts-trips" value={String(trips)} onChange={(e) => setTrips(Number(e.target.value))}>
           {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>
               {n} {n === 1 ? 'trip' : 'trips'} per day
             </option>
           ))}
         </Select>
+        {editing && trips !== (editing.trips_per_day ?? 1) && (
+          <p className="text-xs text-pending-foreground">
+            Saving will replace all {editing.trips_per_day ?? 1} existing trip(s) of this service with {trips} new one(s), staggered from {dep || '—'}.
+          </p>
+        )}
         {trips > 1 && !editing && (
           <p className="text-xs text-muted-foreground">
             Creates {trips} timetable entries: first departs {dep || '—'}, same duration, then evenly staggered across the day (numbered {`${'…'}-2, -3${'…'}`} in the list).
           </p>
         )}
-        {editing && editing.trips_per_day != null && editing.trips_per_day > 1 && (
+        {editing && trips === (editing.trips_per_day ?? 1) && editing.trips_per_day != null && editing.trips_per_day > 1 && (
           <p className="text-xs text-muted-foreground">
             This service runs {editing.trips_per_day} trips/day ({editing.trips_per_day - 1} sibling entries share its number). Editing here changes this trip only.
           </p>
