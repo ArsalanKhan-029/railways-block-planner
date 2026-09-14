@@ -17,6 +17,7 @@ import {
   Check,
   Eye,
   EyeOff,
+  Pencil,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -33,8 +34,11 @@ import {
   resetAuthPassword,
   setUserAccess,
   updateUserRole,
+  updateUserName,
+  updateUserHandle,
   updateUserSections,
   updateUserStatus,
+  updateUserTrain,
   toAuthEmail,
 } from '@/lib/api'
 import { useRailData } from '@/lib/use-rail-data'
@@ -74,6 +78,7 @@ export function AdminView() {
   const [inviteOpen, setInviteOpen] = useState(false)
   const [credFor, setCredFor] = useState<UserRow | null>(null)
   const [deleteFor, setDeleteFor] = useState<UserRow | null>(null)
+  const [editFor, setEditFor] = useState<UserRow | null>(null)
   const { identity } = useAuth()
 
   const managed: ManagedUser[] = useMemo(
@@ -234,6 +239,15 @@ export function AdminView() {
                           <button type="button" onClick={() => cycleStatus(u)}>
                             <Badge variant={STATUS_VARIANT[u.status]}>{u.status}</Badge>
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditFor(users.find((r) => r.id === u.id) ?? null)}
+                            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            aria-label={`Edit user ${u.name}`}
+                            title="Edit name, username, role, sections, train"
+                          >
+                            <Pencil className="size-3.5" />
+                          </button>
                           {/* Permanently remove the account — guarded against
                               deleting yourself or the seeded admin. */}
                           {users.find((r) => r.id === u.id)?.email !== 'railadmin@railmind.app' &&
@@ -336,6 +350,20 @@ export function AdminView() {
           onConfirm={async () => {
             await deleteUser(deleteFor.id)
             setDeleteFor(null)
+            refresh()
+          }}
+        />
+      )}
+
+      {editFor && (
+        <EditUserModal
+          user={editFor}
+          sections={sections}
+          roles={roles}
+          trains={trains.map((t) => ({ train_number: t.train_number, name: t.name }))}
+          onClose={() => setEditFor(null)}
+          onSaved={() => {
+            setEditFor(null)
             refresh()
           }}
         />
@@ -875,6 +903,191 @@ function CreateUserModal({
             </div>
           </form>
         )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Edit User — full admin edit of a staff account: name, username, role,
+ * assigned sections, and the driver's train. Role-driven extras (train
+ * picker for drivers) behave exactly like in Create User. Username changes
+ * rewrite the auth-email handle so the person signs in with the new name.
+ */
+function EditUserModal({
+  user,
+  sections,
+  roles,
+  trains,
+  onClose,
+  onSaved,
+}: {
+  user: UserRow
+  sections: { id: string; name: string }[]
+  roles: string[]
+  trains: { train_number: string; name: string }[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const currentHandle = user.email.replace(/@railmind\.app$/, '')
+  const [name, setName] = useState(user.name)
+  const [handle, setHandle] = useState(currentHandle)
+  const [role, setRole] = useState(roles.includes(user.role) ? user.role : user.role)
+  const [selectedSections, setSelectedSections] = useState<string[]>(user.assigned_sections ?? [])
+  const [selectedTrain, setSelectedTrain] = useState<string | null>(user.assigned_train ?? null)
+  const [trainQuery, setTrainQuery] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const dbRole = toDbRole(role)
+
+  function toggleSection(id: string) {
+    setSelectedSections((cur) => (cur.includes(id) ? cur.filter((s) => s !== id) : [...cur, id]))
+  }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    if (!name.trim() || !handle.trim()) return
+    if (dbRole === 'driver' && !selectedTrain) {
+      setError('Drivers must be assigned a train.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+
+    if (name.trim() !== user.name) {
+      const res = await updateUserName(user.id, name.trim())
+      if (!res.ok) {
+        setSaving(false)
+        setError(res.error ?? 'Could not rename the user')
+        return
+      }
+    }
+    if (handle.trim().toLowerCase() !== currentHandle) {
+      const res = await updateUserHandle(user.id, handle)
+      if (!res.ok) {
+        setSaving(false)
+        setError(res.error ?? 'Could not change the username')
+        return
+      }
+    }
+    if (dbRole !== user.role) {
+      const { error: roleErr } = await updateUserRole(user.id, dbRole)
+      if (roleErr) {
+        setSaving(false)
+        setError(roleErr.message)
+        return
+      }
+    }
+    const curSections = user.assigned_sections ?? []
+    const changedSections =
+      curSections.length !== selectedSections.length || curSections.some((s) => !selectedSections.includes(s))
+    if (changedSections) {
+      const { error: secErr } = await updateUserSections(user.id, selectedSections)
+      if (secErr) {
+        setSaving(false)
+        setError(secErr.message)
+        return
+      }
+    }
+    const curTrain = user.assigned_train ?? null
+    if (selectedTrain !== curTrain) {
+      await updateUserTrain(user.id, selectedTrain)
+    }
+    setSaving(false)
+    onSaved()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-foreground/40 backdrop-blur-[1px]" onClick={onClose} />
+      <div className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-card shadow-2xl">
+        <div className="sticky top-0 flex items-center justify-between border-b border-border bg-card px-5 py-4">
+          <div>
+            <h2 className="text-base font-semibold">Edit user</h2>
+            <p className="text-sm text-muted-foreground">{user.name} · {user.email}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <form className="space-y-4 p-5" onSubmit={handleSubmit}>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="edit-name">Full name</Label>
+            <Input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} required />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="edit-handle">Username</Label>
+            <Input
+              id="edit-handle"
+              value={handle}
+              onChange={(e) => setHandle(e.target.value)}
+              pattern="[a-zA-Z0-9._-]+"
+              title="Letters, numbers, dots, dashes and underscores"
+              required
+            />
+            <p className="text-xs text-muted-foreground">
+              Signs in as this handle{handle !== currentHandle && ' — the old username stops working'}.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="edit-role">Role</Label>
+            <Select id="edit-role" value={role} onChange={(e) => setRole(e.target.value)}>
+              {roles.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </Select>
+          </div>
+          {dbRole === 'driver' && (
+            <DriverTrainPicker
+              trains={trains}
+              query={trainQuery}
+              setQuery={setTrainQuery}
+              selected={selectedTrain}
+              setSelected={setSelectedTrain}
+            />
+          )}
+          <div className="flex flex-col gap-1.5">
+            <Label>Assigned sections</Label>
+            <div className="max-h-36 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+              {sections.map((s) => {
+                const on = selectedSections.includes(s.id)
+                return (
+                  <label key={s.id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted/50">
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => toggleSection(s.id)}
+                      className="accent-primary"
+                    />
+                    {s.name}
+                  </label>
+                )
+              })}
+              {sections.length === 0 && <p className="px-1 py-1 text-xs text-muted-foreground">No sections available.</p>}
+            </div>
+          </div>
+          {error && <p className="text-xs text-conflict">{error}</p>}
+          <div className="flex gap-2 pt-1">
+            <Button type="submit" className="flex-1" disabled={saving}>
+              {saving && <Loader2 className="animate-spin" />}
+              Save changes
+            </Button>
+            <Button type="button" variant="outline" className="flex-1" onClick={onClose}>
+              Cancel
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Passwords are managed separately via Issue login / Reset. Status toggling lives in the table.
+          </p>
+        </form>
       </div>
     </div>
   )

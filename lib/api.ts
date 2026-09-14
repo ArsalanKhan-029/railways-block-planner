@@ -153,6 +153,26 @@ export function updateUserRole(id: string, role: string) {
   return supabase.from('users').update({ role }).eq('id', id)
 }
 
+/** Admin edit: rename a staff user (also updates the auth metadata fallback). */
+export async function updateUserName(id: string, name: string): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from('users').update({ name }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+/** Admin edit: change a user's username (their auth email handle). */
+export async function updateUserHandle(id: string, newHandle: string): Promise<{ ok: boolean; error?: string }> {
+  const handle = newHandle.trim().toLowerCase()
+  if (!/^[a-z0-9._-]+$/.test(handle)) return { ok: false, error: 'Letters, numbers, dots, dashes and underscores only.' }
+  const { data: row } = await supabase.from('users').select('email').eq('id', id).maybeSingle()
+  if (!row) return { ok: false, error: 'User not found.' }
+  const currentHandle = String(row.email).replace(/@railmind\.app$/, '')
+  if (handle === currentHandle) return { ok: true }
+  const { error } = await supabase.from('users').update({ email: toAuthEmail(handle) }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // ---------------- Auth: admin-managed Supabase Auth accounts ----------------
 
 /**
