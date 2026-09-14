@@ -5,6 +5,7 @@ import { Sparkles, X, SendHorizonal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAppShell } from '@/lib/app-shell'
 import { useRailData } from '@/lib/use-rail-data'
+import { useAuth } from '@/lib/auth'
 import type { RailSnapshot } from '@/app/api/railai/route'
 import { cn } from '@/lib/utils'
 
@@ -91,6 +92,7 @@ function buildSnapshot(
 
 export function RailAIWidget() {
   const { view } = useAppShell()
+  const { accessToken } = useAuth()
   const data = useRailData()
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState<Msg[]>([{ role: 'assistant', content: WELCOME }])
@@ -107,6 +109,9 @@ export function RailAIWidget() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, open])
 
+  const accessTokenRef = useRef<string | null>(null)
+  accessTokenRef.current = accessToken
+
   const send = useCallback(async () => {
     const text = input.trim()
     if (!text || busy) return
@@ -122,6 +127,7 @@ export function RailAIWidget() {
           messages: next.filter((m) => m.role === 'user' || m.role === 'assistant').slice(-14),
           snapshot: snapshotRef.current,
           view: snapshotRef.current.view,
+          accessToken: accessTokenRef.current ?? undefined,
         }),
       })
       const json = (await res.json()) as { reply?: string; error?: string }

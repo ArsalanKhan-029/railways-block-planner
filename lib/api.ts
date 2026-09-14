@@ -342,6 +342,27 @@ export async function routeConflictNotifications(input: {
     train_number: trainNumber,
   }))
   const res = await insertNotifications(rows)
+
+  // Web Push fan-out — same payload to every subscribed device of the
+  // targeted users (drivers get it even with the app closed). Fire-and-forget.
+  const pushIds = [...new Set(rows.map((r) => r.user_id))]
+  if (pushIds.length) {
+    fetch('/api/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userAuthIds: pushIds,
+        title,
+        body: rows[rows.length - 1]?.body ?? body,
+        tag: block.id,
+        severity: block.urgency,
+        url: '/?view=planning',
+      }),
+    }).catch(() => {
+      /* push is best-effort; in-app bell already recorded the notification */
+    })
+  }
+
   return { ok: res.ok, notified: rows.length }
 }
 

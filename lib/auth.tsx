@@ -53,6 +53,8 @@ interface AuthContextValue {
   identity: Identity | null
   user: User | null
   ready: boolean
+  /** Current Supabase access token — lets server routes act as this user. */
+  accessToken: string | null
   /** Username/email + password sign-in via Supabase Auth. */
   signIn: (handle: string, password: string) => Promise<{ ok: boolean; error?: string }>
   signOut: () => Promise<void>
@@ -62,6 +64,7 @@ const AuthContext = createContext<AuthContextValue>({
   identity: null,
   user: null,
   ready: false,
+  accessToken: null,
   signIn: async () => ({ ok: false }),
   signOut: async () => {},
 })
@@ -141,7 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     : null
 
   return (
-    <AuthContext.Provider value={{ identity, user: session?.user ?? null, ready, signIn, signOut }}>
+    <AuthContext.Provider value={{ identity, user: session?.user ?? null, ready, accessToken: session?.access_token ?? null, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )

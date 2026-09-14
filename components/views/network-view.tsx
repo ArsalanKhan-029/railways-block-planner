@@ -7,11 +7,20 @@ import { Button } from '@/components/ui/button'
 import {
   Plus, Minus, Maximize2, Loader2, Radar, TrainFront, Wrench,
   TriangleAlert, ChevronDown, Download, Clock, Layers, Ban, Eye, EyeOff,
+  Expand, Shrink,
 } from 'lucide-react'
 import { useRailData } from '@/lib/use-rail-data'
 import { useAuth } from '@/lib/auth'
 import { useAppShell } from '@/lib/app-shell'
 import { projectToUnit } from '@/lib/geo'
+import {
+  loadTrackPolylines,
+  snapSection,
+  pointOnPath,
+  pathUpTo,
+  haversineKm,
+  type SnappedPath,
+} from '@/lib/network-geometry'
 import { istDayStartUtcMs, timestampToIstHours, timeToHours } from '@/lib/api'
 import { setSectionConflict, deleteBlock, deleteComplaint, updateComplaintStatus } from '@/lib/api'
 import type { BlockRow, ComplaintRow, SectionRow, StationRow, TrainRow } from '@/lib/types'
@@ -181,6 +190,20 @@ export function NetworkView() {
     }
   })
   const [routesOpen, setRoutesOpen] = useState(false)
+  // fullscreen control-room mode: map takes over the whole viewport
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setFullscreen(false)
+    window.addEventListener('keydown', onKey)
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = ''
+    }
+  }, [fullscreen])
+  // real track geometry: curved polylines extracted from the network map
+  const [polylines, setPolylines] = useState<Awaited<ReturnType<typeof loadTrackPolylines>> | null>(null)
 
   function setVisibleRoutes(next: Set<string>) {
     setHiddenRoutes(next)
@@ -190,9 +213,16 @@ export function NetworkView() {
     const ist = new Date(Date.now() + 5.5 * 3_600_000)
     return ist.getUTCHours() + ist.getUTCMinutes() / 60
   })
-  const dragging = useRef<{ x: number; y: number; px: number; py: number } | null>(null)
+  useEffect(() => {
+    let alive = true
+    loadTrackPolylines().then((p) => alive && setPolylines(p))
+    return () => {
+      alive = false
+    }
+  }, [])
   const wrapRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
+  const dragging = useRef<{ x: number; y: number; px: number; py: number } | null>(null)
   const [size, setSize] = useState({ w: 900, h: 640 })
 
   // live clock tick (only when not scrubbing)
@@ -235,6 +265,25 @@ export function NetworkView() {
     return m
   }, [stations])
 
+  // Snap each section onto the real curved track polylines (map geometry).
+  // Sections whose endpoints don't sit near any polyline keep null and fall
+  // back to the bend-through-minor-stations straight path below.
+  const snappedPaths = useMemo(() => {
+    const out = new Map<string, SnappedPath>()
+    if (!polylines || polylines.length === 0) return out
+    for (const sec of sections) {
+      const a = sec.from_station ? stationsByCode.get(sec.from_station) : null
+      const b = sec.to_station ? stationsByCode.get(sec.to_station) : null
+      if (!a || !b) continue
+      const pa = projected.get(a.code)
+      const pb = projected.get(b.code)
+      if (!pa || !pb) continue
+      const snapped = snapSection(polylines, { x: pa.x, y: pa.y }, { x: pb.x, y: pb.y })
+      if (snapped) out.set(sec.id, snapped)
+    }
+    return out
+  }, [polylines, sections, stationsByCode, projected])
+
   // section track lines: from-hub -> to-hub, bent through intermediate mapped
   // stations that actually lie near the straight line (perpendicular-distance
   // corridor, ordered by projection along the segment)
@@ -247,7 +296,7 @@ export function NetworkView() {
       t = Math.max(0, Math.min(1, t))
       return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
     }
-    const out: { section: SectionRow; d: string; pts: { x: number; y: number }[] }[] = []
+    const out: { section: SectionRow; d: string; pts: { x: number; y: number }[]; snapped: SnappedPath | null }[] = []
     const minorStations = stations.filter((s) => s.tier === 'station')
     for (const sec of sections) {
       const a = sec.from_station ? stationsByCode.get(sec.from_station) : null
@@ -255,6 +304,13 @@ export function NetworkView() {
       if (!a || !b) continue
       const pa = projected.get(a.code)!
       const pb = projected.get(b.code)!
+      // Prefer the real curved geometry when available.
+      const snapped = snappedPaths.get(sec.id) ?? null
+      if (snapped) {
+        const d = snapped.pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${(p.x * 1000).toFixed(1)},${(p.y * 1000).toFixed(1)}`).join('')
+        out.push({ section: sec, d, pts: snapped.pts, snapped })
+        continue
+      }
       const between = minorStations
         .map((s) => ({ p: projected.get(s.code)! }))
         .filter(({ p }) => p && distToSeg(p, pa, pb) < corridor)
@@ -265,10 +321,10 @@ export function NetworkView() {
         .map((x) => x.p)
       const pts = [pa, ...between, pb]
       const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${(p.x * 1000).toFixed(1)},${(p.y * 1000).toFixed(1)}`).join('')
-      out.push({ section: sec, d, pts })
+      out.push({ section: sec, d, pts, snapped: null })
     }
     return out
-  }, [sections, stations, stationsByCode, projected])
+  }, [sections, stations, stationsByCode, projected, snappedPaths])
 
   // assets per section + asset-inactive detection for the visibility panel
   const sectionActivity = useMemo(() => {
@@ -358,6 +414,89 @@ export function NetworkView() {
     }
     return out
   }, [trains, stationsByCode, activeH, sectionById])
+
+  /** Resolve the snapped geometry a train is currently traveling on. */
+  const trainPath = useCallback(
+    (tp: TrainPos): SnappedPath | null => {
+      const direct = sections.find((s) => s.from_station === tp.from.code && s.to_station === tp.to.code)
+      const sec = direct ?? sections.find((s) => s.id === tp.train.section_id)
+      if (!sec) return null
+      const snapped = snappedPaths.get(sec.id)
+      if (snapped) {
+        // direction: forward if the path starts at tp.from
+        const first = snapped.pts[0]
+        const fromP = projected.get(tp.from.code)
+        const reverse = fromP && Math.hypot(first.x - fromP.x, first.y - fromP.y) > Math.hypot(first.x - (projected.get(tp.to.code)?.x ?? first.x), first.y - (projected.get(tp.to.code)?.y ?? first.y))
+        if (!reverse) return snapped
+        return { pts: [...snapped.pts].reverse(), cum: [...snapped.cum].reverse().map((c) => snapped.totalLen - c), totalLen: snapped.totalLen }
+      }
+      // straight fallback path between the two endpoint markers
+      const a = projected.get(tp.from.code)
+      const b = projected.get(tp.to.code)
+      if (!a || !b) return null
+      return { pts: [a, b], cum: [0, Math.hypot(b.x - a.x, b.y - a.y)], totalLen: Math.hypot(b.x - a.x, b.y - a.y) }
+    },
+    [sections, snappedPaths, projected],
+  )
+
+  // rendered train dots: position along the snapped curve + distance-based
+  // speed estimate (route km / journey hours) for the hover readout
+  const renderedTrains = useMemo(() => {
+    return trainPositions
+      .map((tp) => {
+        const path = trainPath(tp)
+        if (!path) return null
+        const { p, traveled } = pointOnPath(path, tp.t)
+        const routeKm =
+          tp.train.distance_km ??
+          (() => {
+            const f = stationsByCode.get(tp.from.code)
+            const t2 = stationsByCode.get(tp.to.code)
+            if (!f || !t2) return null
+            return haversineKm(f.latitude, f.longitude, t2.latitude, t2.longitude)
+          })()
+        const depH = timeToHours(tp.train.start_time)
+        const arrH = timeToHours(tp.train.end_time)
+        const spanH = Math.max(0.5, arrH >= depH ? arrH - depH : arrH + 24 - depH)
+        const speedKmh = routeKm ? routeKm / spanH : null
+        // ETA at the next station (tp.to) — remaining fraction of this segment × segment span
+        const a0 = timeToHours(tp.scheduledDeparture ?? tp.train.start_time)
+        const a1 = timeToHours(tp.scheduledArrival ?? tp.train.end_time)
+        const segSpan = Math.max(0.05, a1 >= a0 ? a1 - a0 : a1 + 24 - a0)
+        const etaMin = Math.round((1 - tp.t) * segSpan * 60)
+        const etaClock = (() => {
+          const totalMin = Math.floor(activeH * 60 + etaMin)
+          const m = ((totalMin % 1440) + 1440) % 1440
+          return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+        })()
+        // delay prediction from block-overlap history: minutes the train is
+        // scheduled to sit inside an approved/conflict block window on its
+        // section (ahead of the current position) — deterministic heuristic
+        const delayMin = (() => {
+          if (tp.train.status === 'delayed') return null // already delayed, not a prediction
+          const sec = sectionById.get(tp.train.section_id)
+          if (!sec) return 0
+          const depH = timeToHours(tp.scheduledDeparture ?? tp.train.start_time)
+          const arrH = timeToHours(tp.scheduledArrival ?? tp.train.end_time)
+          let total = 0
+          for (const b of blocks) {
+            if (b.section_id !== sec.id) continue
+            if (b.status !== 'approved' && b.status !== 'conflict') continue
+            const bs = h(b.start_time)
+            let be = h(b.end_time)
+            if (Number.isNaN(bs) || Number.isNaN(be)) continue
+            if (be <= bs) be += 24
+            // overlap of [dep, arr] with [bs, be]
+            const lo = Math.max(depH, bs)
+            const hi = Math.min(arrH >= depH ? arrH : arrH + 24, be)
+            if (hi > lo) total += (hi - lo) * 60
+          }
+          return Math.round(total)
+        })()
+        return { tp, path, p, traveled, speedKmh, etaMin, etaClock, delayMin }
+      })
+      .filter((v): v is NonNullable<typeof v> => v !== null)
+  }, [trainPositions, trainPath, stationsByCode, activeH, blocks, sectionById])
 
   // deep-link intents from search / conflict center
   useEffect(() => {
@@ -512,16 +651,42 @@ export function NetworkView() {
           <button type="button" onClick={resetView} className="rounded-lg border border-border bg-card p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Reset view">
             <Maximize2 className="size-4" />
           </button>
+          <button
+            type="button"
+            onClick={() => setFullscreen((f) => !f)}
+            className="rounded-lg border border-border bg-card p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label={fullscreen ? 'Exit control-room mode' : 'Fullscreen control-room mode'}
+            title={fullscreen ? 'Exit control-room mode (Esc)' : 'Fullscreen control-room mode'}
+          >
+            {fullscreen ? <Shrink className="size-4" /> : <Expand className="size-4" />}
+          </button>
         </div>
       </div>
 
       {/* Map + legend */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_240px]">
-        <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            <div
-              ref={wrapRef}
-              className={cn('relative h-[620px] w-full cursor-grab touch-none select-none overflow-hidden bg-background', dragging.current && 'cursor-grabbing')}
+      <div className={cn('grid grid-cols-1 gap-4', !fullscreen && 'xl:grid-cols-[1fr_240px]')}>
+        <div className={cn('overflow-hidden rounded-xl border border-border bg-card', fullscreen && 'fixed inset-0 z-50 flex flex-col bg-background p-3')}>
+          {fullscreen && (
+            <div className="flex items-center gap-3 pb-2">
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm">
+                <Radar className="size-4 animate-pulse text-approved" />
+                <span className="font-medium">{runningCount}</span>
+                <span className="text-muted-foreground">running</span>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg border border-conflict/30 bg-conflict/10 px-3 py-1.5 text-sm">
+                <TriangleAlert className="size-4 text-conflict" />
+                <span className="font-medium text-conflict">{conflictCount}</span>
+                <span className="text-muted-foreground">blocked</span>
+              </div>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground">Control room · {scrubH != null ? 'simulated' : 'live'} {String(Math.floor(activeH)).padStart(2, '0')}:{String(Math.floor((activeH % 1) * 60)).padStart(2, '0')} IST</p>
+              <button type="button" onClick={() => setFullscreen(false)} className="ml-auto rounded-lg border border-border bg-card p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Exit fullscreen">
+                <Shrink className="size-4" />
+              </button>
+            </div>
+          )}
+          <div
+            ref={wrapRef}
+            className={cn('relative w-full cursor-grab touch-none select-none overflow-hidden bg-background', dragging.current && 'cursor-grabbing', fullscreen ? 'min-h-0 flex-1' : 'h-[620px]')}
               onWheel={onWheel}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
@@ -644,17 +809,23 @@ export function NetworkView() {
                     )
                   })}
 
-                  {/* trains */}
-                  {visibleTrains && trainPositions.map((tp) => {
-                    const pa = projected.get(tp.from.code)
-                    const pb = projected.get(tp.to.code)
-                    if (!pa || !pb) return null
-                    const x = (pa.x + (pb.x - pa.x) * tp.t) * VB.w
-                    const y = (pa.y + (pb.y - pa.y) * tp.t) * VB.h
+                  {/* trains — positioned along the real curved track geometry */}
+                  {visibleTrains && renderedTrains.map(({ tp, path, p, traveled, speedKmh, etaMin, etaClock, delayMin }) => {
+                    const x = p.x * VB.w
+                    const y = p.y * VB.h
                     const delayed = tp.train.status === 'delayed'
                     const color = delayed ? '#ef4444' : tp.running ? '#a3e635' : '#64748b'
                     return (
-                      <g key={tp.train.id} data-interactive className="cursor-pointer" onMouseEnter={() => setHoverTrain(tp)} onMouseLeave={() => setHoverTrain(null)} onClick={() => setSelectedTrain(tp.train)}>
+                      <g
+                        key={tp.train.id}
+                        data-interactive
+                        className="cursor-pointer"
+                        onMouseEnter={() => setHoverTrain({ ...tp, _speed: speedKmh, _etaMin: etaMin, _etaClock: etaClock, _delayMin: delayMin } as TrainPos & { _speed?: number | null; _etaMin?: number; _etaClock?: string; _delayMin?: number | null })}
+                        onMouseLeave={() => setHoverTrain(null)}
+                        onClick={() => setSelectedTrain(tp.train)}
+                      >
+                        {/* fading trail of the traveled path */}
+                        <path d={pathUpTo(path, traveled)} fill="none" stroke={color} strokeWidth={2.5} strokeOpacity={0.35} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
                         <circle cx={x} cy={y} r={14} fill={color} fillOpacity={0.22} />
                         <circle cx={x} cy={y} r={7} fill={color} stroke={theme === 'dark' ? '#0b1220' : '#fff'} strokeWidth={2} filter="url(#glow)" />
                       </g>
@@ -676,6 +847,18 @@ export function NetworkView() {
                     {hoverTrain.scheduledArrival && <> · arr {hoverTrain.scheduledArrival.slice(0, 5)}</>}
                     {hoverTrain.scheduledDeparture && <> · dep {hoverTrain.scheduledDeparture.slice(0, 5)}</>}
                   </p>
+                  {(() => {
+                    const extra = hoverTrain as TrainPos & { _speed?: number | null; _etaMin?: number; _etaClock?: string; _delayMin?: number | null }
+                    return (
+                      <p className="mt-0.5 text-muted-foreground">
+                        {extra._speed != null && <>≈ {Math.round(extra._speed)} km/h · </>}
+                        {extra._etaMin != null && <>next stop {hoverTrain.to.code} in ~{extra._etaMin} min (ETA {extra._etaClock})</>}
+                        {extra._delayMin != null && extra._delayMin > 0 && (
+                          <span className="text-pending-foreground"> · +{extra._delayMin} min delay risk (track work ahead)</span>
+                        )}
+                      </p>
+                    )
+                  })()}
                   <p className="mt-1 text-[10px] text-muted-foreground">Click to open full schedule</p>
                 </div>
               )}
@@ -711,11 +894,10 @@ export function NetworkView() {
                 {stations.length.toLocaleString()} stations · {sections.length} sections
               </div>
             </div>
-          </CardContent>
-        </Card>
+        </div>
 
         {/* Legend + time scrubber */}
-        <div className="space-y-4">
+        <div className={cn('space-y-4', fullscreen && 'hidden')}>
           <Card>
             <CardContent className="p-0">
               <button type="button" onClick={() => setLegendOpen((o) => !o)} className="flex w-full items-center justify-between px-4 py-3 text-left">

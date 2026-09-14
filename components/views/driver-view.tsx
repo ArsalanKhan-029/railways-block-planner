@@ -94,15 +94,15 @@ export function DriverView({ identity }: { identity: Identity }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Assigned train header */}
       <Card>
-        <CardContent className="flex flex-wrap items-center gap-4 p-5">
-          <span className="flex size-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4 sm:p-5">
+          <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
             <TrainFront className="size-6" />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-semibold">
+            <h2 className="text-base font-semibold sm:text-lg">
               {myTrain.train_number} · {myTrain.name}
             </h2>
             <p className="text-sm text-muted-foreground">
@@ -110,7 +110,7 @@ export function DriverView({ identity }: { identity: Identity }) {
               {myTrain.distance_km != null ? `${Math.round(myTrain.distance_km)} km` : `${myTrain.route?.c.length ?? 0} stops`}
             </p>
           </div>
-          <Badge variant={running ? 'success' : 'warning'} className="text-xs">
+          <Badge variant={running ? 'success' : 'warning'} className="self-start text-xs sm:self-auto">
             {running ? 'On duty — running' : 'Not yet started'}
           </Badge>
         </CardContent>
@@ -118,7 +118,7 @@ export function DriverView({ identity }: { identity: Identity }) {
 
       {/* Route progress */}
       <Card>
-        <CardContent className="p-5">
+        <CardContent className="p-4 sm:p-5">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="flex items-center gap-2 text-sm font-semibold">
               <Waypoints className="size-4 text-primary" /> Route progress
@@ -139,7 +139,7 @@ export function DriverView({ identity }: { identity: Identity }) {
 
       {/* Alerts affecting my route */}
       <Card>
-        <CardContent className="p-5">
+        <CardContent className="p-4 sm:p-5">
           <h3 className="flex items-center gap-2 text-sm font-semibold">
             <TriangleAlert className={cn('size-4', conflicts.length ? 'text-conflict' : 'text-approved')} />
             Track alerts on my route
@@ -197,7 +197,7 @@ export function DriverView({ identity }: { identity: Identity }) {
 
       {/* Full stop list (collapsed scroll) */}
       <Card>
-        <CardContent className="p-5">
+        <CardContent className="p-4 sm:p-5">
           <h3 className="mb-3 text-sm font-semibold">Full schedule — {myTrain.route?.c.length ?? 0} stops</h3>
           <div className="max-h-72 overflow-y-auto rounded-lg border border-border">
             <table className="w-full text-xs">

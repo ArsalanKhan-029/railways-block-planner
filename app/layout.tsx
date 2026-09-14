@@ -1,6 +1,7 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
+import { ServiceWorkerRegister } from '@/components/service-worker-register'
 import './globals.css'
 
 const geistSans = Geist({
@@ -18,11 +19,14 @@ export const metadata: Metadata = {
   description:
     'AI-powered automatic block planning for Indian Railways — schedule track maintenance alongside train operations to maximize asset availability.',
   generator: 'v0.app',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'RailMind' },
 }
 
 export const viewport: Viewport = {
   colorScheme: 'light',
   themeColor: '#1e293b',
+  viewportFit: 'cover',
 }
 
 export default function RootLayout({
@@ -33,6 +37,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} bg-background`}>
       <body className="font-sans antialiased">
+        <ServiceWorkerRegister />
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

@@ -9,8 +9,51 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import type { Role } from '@/lib/mock-data'
 import { useRailData } from '@/lib/use-rail-data'
+import { usePush } from '@/lib/use-push'
 import { enableDemoMode, disableDemoMode, getDemoModeState, type DemoModeState } from '@/lib/api'
 import { cn } from '@/lib/utils'
+
+/** Real Web Push toggle — subscribes this device for out-of-app alerts. */
+function PushToggle() {
+  const { permission, enabled, busy, enable } = usePush()
+  const on = enabled && permission === 'granted'
+  const unsupported = permission === 'unsupported'
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-border py-3.5">
+      <div>
+        <p className="text-sm font-medium">Device notifications</p>
+        <p className="text-xs text-muted-foreground">
+          {unsupported
+            ? 'Not supported in this browser'
+            : on
+              ? 'Subscribed — you receive alerts even with the app closed'
+              : permission === 'denied'
+                ? 'Blocked in browser settings — re-enable notifications for this site'
+                : 'Enable Web Push for this device (recommended for drivers)'}
+        </p>
+      </div>
+      <button
+        type="button"
+        disabled={unsupported || busy || on}
+        onClick={() => enable()}
+        role="switch"
+        aria-checked={on}
+        aria-label="Device notifications"
+        className={cn(
+          'relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50',
+          on ? 'bg-primary' : 'bg-muted',
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-0.5 size-4 rounded-full bg-background transition-transform',
+            on ? 'translate-x-4.5' : 'translate-x-0.5',
+          )}
+        />
+      </button>
+    </div>
+  )
+}
 
 function Toggle({ label, desc, defaultOn }: { label: string; desc: string; defaultOn?: boolean }) {
   const [on, setOn] = useState(!!defaultOn)
@@ -74,6 +117,7 @@ export function SettingsView({ role, email, displayName }: { role: Role; email: 
               <Bell className="size-4 text-primary" />
               <h2 className="text-sm font-semibold">Notifications</h2>
             </div>
+            <PushToggle />
             <Toggle label="Conflict alerts" desc="Push when a new scheduling conflict is detected" defaultOn />
             <Toggle label="Block approvals" desc="Notify when your requests are approved" defaultOn />
             <Toggle label="Daily digest" desc="Summary of section activity at 06:00" />

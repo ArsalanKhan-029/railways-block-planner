@@ -497,6 +497,8 @@ function MaintenanceTab({ sections, refresh }: { sections: { id: string; code: s
   const [sectionId, setSectionId] = useState(sections[0]?.id ?? '')
   const [start, setStart] = useState('22:00')
   const [end, setEnd] = useState('02:00')
+  const [repeat, setRepeat] = useState<'none' | 'daily' | 'weekly'>('none')
+  const [repeatWeeks, setRepeatWeeks] = useState(4)
   const warnings = useConflictPrecheck(sectionId, start, end)
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
@@ -509,20 +511,27 @@ function MaintenanceTab({ sections, refresh }: { sections: { id: string; code: s
     if (!title || !sectionId) return
     setSaving(true)
     setError(null)
-    const today = new Date()
-    const s = new Date(`${today.toISOString().slice(0, 10)}T${start}:00+05:30`)
-    const e2 = new Date(s.getTime() + durationH * 3600_000)
-    const { error: err } = await insertBlock({
-      section_id: sectionId,
-      title,
-      block_type: category,
-      start_time: s.toISOString(),
-      end_time: e2.toISOString(),
-      urgency,
-      requested_by: 'Schedule (admin)',
-    })
+
+    const occurrences = repeat === 'none' ? 1 : repeat === 'daily' ? Math.min(14, repeatWeeks) : Math.min(8, repeatWeeks)
+    const stepDays = repeat === 'weekly' ? 7 : 1
+    let lastError: { message: string } | null = null
+    for (let i = 0; i < occurrences; i++) {
+      const day = new Date(Date.now() + i * stepDays * 86_400_000)
+      const s = new Date(`${day.toISOString().slice(0, 10)}T${start}:00+05:30`)
+      const e2 = new Date(s.getTime() + durationH * 3600_000)
+      const { error: err } = await insertBlock({
+        section_id: sectionId,
+        title: occurrences > 1 ? `${title} (${i + 1}/${occurrences})` : title,
+        block_type: category,
+        start_time: s.toISOString(),
+        end_time: e2.toISOString(),
+        urgency,
+        requested_by: 'Schedule (admin)',
+      })
+      if (err) lastError = err
+    }
     setSaving(false)
-    if (err) setError(err.message)
+    if (lastError) setError(lastError.message)
     else {
       setDone(true)
       refresh()
@@ -581,6 +590,31 @@ function MaintenanceTab({ sections, refresh }: { sections: { id: string; code: s
               <Input id="ms-end" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
             </div>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="ms-repeat">Repeat</Label>
+              <Select id="ms-repeat" value={repeat} onChange={(e) => setRepeat(e.target.value as 'none' | 'daily' | 'weekly')}>
+                <option value="none">One-off</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly (same weekday)</option>
+              </Select>
+            </div>
+            {repeat !== 'none' && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ms-weeks">Occurrences</Label>
+                <Select id="ms-weeks" value={String(repeatWeeks)} onChange={(e) => setRepeatWeeks(Number(e.target.value))}>
+                  {(repeat === 'daily' ? [3, 5, 7, 14] : [2, 4, 6, 8]).map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </Select>
+              </div>
+            )}
+          </div>
+          {repeat !== 'none' && (
+            <p className="text-xs text-muted-foreground">
+              Creates {repeat === 'daily' ? Math.min(14, repeatWeeks) : Math.min(8, repeatWeeks)} block requests — each checked for conflicts independently by the engine.
+            </p>
+          )}
           {warnings.length > 0 && (
             <div className="rounded-lg border border-pending/50 bg-pending/10 p-2.5 text-xs text-pending-foreground">
               {warnings.map((w) => (
