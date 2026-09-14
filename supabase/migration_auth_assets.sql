@@ -160,12 +160,46 @@ begin
 end;
 $$;
 
+-- Admin: permanently delete a staff user AND their Supabase Auth account.
+-- Guards: the seeded administrator can never be deleted, and an admin cannot
+-- delete the account they are currently signed in with.
+create or replace function public.admin_delete_user(p_user_id uuid)
+returns void
+language plpgsql
+security definer set search_path = public, extensions
+as $$
+declare
+  v_auth uuid;
+  v_email text;
+begin
+  select auth_user_id, email into v_auth, v_email from public.users where id = p_user_id;
+  if v_email is null then
+    raise exception 'User not found';
+  end if;
+  if lower(v_email) = 'railadmin@railmind.app' then
+    raise exception 'The seeded administrator account cannot be deleted';
+  end if;
+  if v_auth is not null and v_auth = auth.uid() then
+    raise exception 'You cannot delete the account you are signed in with';
+  end if;
+  delete from public.notifications where user_id = v_auth;
+  delete from public.push_subscriptions where user_id = v_auth;
+  if v_auth is not null then
+    delete from auth.identities where user_id = v_auth;
+    delete from auth.users where id = v_auth;
+  end if;
+  delete from public.users where id = p_user_id;
+end;
+$$;
+
 revoke execute on function public.admin_create_auth_user(text, text, uuid, text, uuid[]) from anon;
 revoke execute on function public.admin_reset_password(uuid, text) from anon;
 revoke execute on function public.admin_disable_user(uuid, boolean) from anon;
+revoke execute on function public.admin_delete_user(uuid) from anon;
 grant execute on function public.admin_create_auth_user(text, text, uuid, text, uuid[]) to authenticated;
 grant execute on function public.admin_reset_password(uuid, text) to authenticated;
 grant execute on function public.admin_disable_user(uuid, boolean) to authenticated;
+grant execute on function public.admin_delete_user(uuid) to authenticated;
 grant usage on schema public to authenticated;
 
 -- ------------------------------------------------- 4. seeded administrator ---

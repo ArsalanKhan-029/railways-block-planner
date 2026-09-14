@@ -38,6 +38,9 @@ import {
   toAuthEmail,
 } from '@/lib/api'
 import { useRailData } from '@/lib/use-rail-data'
+import { useAuth } from '@/lib/auth'
+import { deleteUser } from '@/lib/api'
+import { ConfirmDelete } from '@/components/confirm-delete'
 import type { UserRow, RoleRow } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -70,6 +73,8 @@ export function AdminView() {
   const [tab, setTab] = useState<Tab>('users')
   const [inviteOpen, setInviteOpen] = useState(false)
   const [credFor, setCredFor] = useState<UserRow | null>(null)
+  const [deleteFor, setDeleteFor] = useState<UserRow | null>(null)
+  const { identity } = useAuth()
 
   const managed: ManagedUser[] = useMemo(
     () => toManagedUsers(users, sections),
@@ -225,9 +230,25 @@ export function AdminView() {
                         </div>
                       </td>
                       <td className="px-5 py-3">
-                        <button type="button" onClick={() => cycleStatus(u)}>
-                          <Badge variant={STATUS_VARIANT[u.status]}>{u.status}</Badge>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button type="button" onClick={() => cycleStatus(u)}>
+                            <Badge variant={STATUS_VARIANT[u.status]}>{u.status}</Badge>
+                          </button>
+                          {/* Permanently remove the account — guarded against
+                              deleting yourself or the seeded admin. */}
+                          {users.find((r) => r.id === u.id)?.email !== 'railadmin@railmind.app' &&
+                            users.find((r) => r.id === u.id)?.auth_user_id !== identity?.userId && (
+                              <button
+                                type="button"
+                                onClick={() => setDeleteFor(users.find((r) => r.id === u.id) ?? null)}
+                                className="rounded-md p-1 text-muted-foreground hover:bg-conflict/10 hover:text-conflict"
+                                aria-label={`Delete user ${u.name}`}
+                                title="Delete user permanently"
+                              >
+                                <Trash2 className="size-3.5" />
+                              </button>
+                            )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -303,6 +324,18 @@ export function AdminView() {
           onClose={() => setCredFor(null)}
           onSaved={() => {
             setCredFor(null)
+            refresh()
+          }}
+        />
+      )}
+
+      {deleteFor && (
+        <ConfirmDelete
+          name={`${deleteFor.name} (${deleteFor.email})`}
+          onCancel={() => setDeleteFor(null)}
+          onConfirm={async () => {
+            await deleteUser(deleteFor.id)
+            setDeleteFor(null)
             refresh()
           }}
         />

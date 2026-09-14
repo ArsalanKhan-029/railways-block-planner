@@ -228,6 +228,26 @@ export async function resetAuthPassword(
   return { ok: true }
 }
 
+/** Admin: permanently delete a user — staff row + Supabase Auth account. */
+export async function deleteUser(
+  user_id: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.rpc('admin_delete_user', {
+    p_user_id: user_id,
+  })
+  if (error) {
+    if ((error as { code?: string }).code === '42883') {
+      return {
+        ok: false,
+        error:
+          'Auth provisioning is not set up yet: apply supabase/migration_auth_assets.sql in the Supabase SQL Editor first.',
+      }
+    }
+    return { ok: false, error: error.message }
+  }
+  return { ok: true }
+}
+
 /** Admin: ban/unban the auth account and set the staff status to match. */
 export async function setUserAccess(
   user_id: string,
