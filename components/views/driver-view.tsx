@@ -42,6 +42,15 @@ export function DriverView({ identity }: { identity: Identity }) {
 
   // blocks/conflicts affecting any section my train's route passes through
   const routeCodes = myTrain?.route?.c ?? []
+  // Manually scheduled trains carry no per-stop route jsonb — the UI below
+  // must treat every route field as optional.
+  const stops: { code: string; arr: string | null; dep: string | null; day: number }[] =
+    myTrain?.route?.c?.map((code, i) => ({
+      code,
+      arr: myTrain.route?.a?.[i] ?? null,
+      dep: myTrain.route?.d?.[i] ?? null,
+      day: myTrain.route?.day?.[i] ?? 1,
+    })) ?? []
   const routeSectionIds = useMemo(() => {
     const ids = new Set<string>()
     if (mySection) ids.add(mySection.id)
@@ -76,7 +85,7 @@ export function DriverView({ identity }: { identity: Identity }) {
     : 0
   const running = myTrain ? nowH >= timeToHours(myTrain.start_time) && nowH <= timeToHours(myTrain.end_time) : false
 
-  const currentIdx = myTrain?.route ? Math.floor(progress * Math.max(0, myTrain.route.c.length - 1)) : 0
+  const currentIdx = stops.length ? Math.floor(progress * Math.max(0, stops.length - 1)) : 0
 
   if (!assignedNumber || !myTrain) {
     return (
@@ -107,7 +116,7 @@ export function DriverView({ identity }: { identity: Identity }) {
             </h2>
             <p className="text-sm text-muted-foreground">
               {mySection?.name ?? 'Network'} · {myTrain.start_time.slice(0, 5)}–{myTrain.end_time.slice(0, 5)} IST ·{' '}
-              {myTrain.distance_km != null ? `${Math.round(myTrain.distance_km)} km` : `${myTrain.route?.c.length ?? 0} stops`}
+              {myTrain.distance_km != null ? `${Math.round(myTrain.distance_km)} km` : `${stops.length} stops`}
             </p>
           </div>
           <Badge variant={running ? 'success' : 'warning'} className="self-start text-xs sm:self-auto">
@@ -124,7 +133,7 @@ export function DriverView({ identity }: { identity: Identity }) {
               <Waypoints className="size-4 text-primary" /> Route progress
             </h3>
             <span className="text-xs text-muted-foreground">
-              {myTrain.route?.c[currentIdx] ?? '—'} → next stop {myTrain.route?.c[currentIdx + 1] ?? '—'}
+              {stops[currentIdx]?.code ?? '—'} → next stop {stops[currentIdx + 1]?.code ?? '—'}
             </span>
           </div>
           <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -132,7 +141,7 @@ export function DriverView({ identity }: { identity: Identity }) {
           </div>
           <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
             <Clock className="size-3.5" />
-            {(progress * 100).toFixed(0)}% of today&apos;s journey · {Math.round(progress * (myTrain.route?.c.length ?? 0))} of {myTrain.route?.c.length ?? 0} stops
+            {(progress * 100).toFixed(0)}% of today&apos;s journey · {Math.round(progress * stops.length)} of {stops.length} stops
           </p>
         </CardContent>
       </Card>
@@ -186,7 +195,7 @@ export function DriverView({ identity }: { identity: Identity }) {
             variant="outline"
             size="sm"
             className="mt-3"
-            onClick={() => go({ kind: 'station', stationCode: myTrain.route?.c[Math.max(0, currentIdx)] ?? '' })}
+            onClick={() => go({ kind: 'station', stationCode: stops[Math.max(0, currentIdx)]?.code ?? '' })}
           >
             <MapPin className="size-4" />
             Locate me on the Network View
@@ -198,7 +207,7 @@ export function DriverView({ identity }: { identity: Identity }) {
       {/* Full stop list (collapsed scroll) */}
       <Card>
         <CardContent className="p-4 sm:p-5">
-          <h3 className="mb-3 text-sm font-semibold">Full schedule — {myTrain.route?.c.length ?? 0} stops</h3>
+          <h3 className="mb-3 text-sm font-semibold">Full schedule — {stops.length} stops</h3>
           <div className="max-h-72 overflow-y-auto rounded-lg border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-card">
@@ -211,22 +220,30 @@ export function DriverView({ identity }: { identity: Identity }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {myTrain.route?.c.map((code, i) => {
-                  const st = stationsByCode.get(code)
+                {stops.map((stop, i) => {
+                  const st = stationsByCode.get(stop.code)
                   const isCurrent = i === currentIdx && running
                   return (
-                    <tr key={`${code}-${i}`} className={cn('hover:bg-muted/40', isCurrent && 'bg-primary/10 font-medium')}>
+                    <tr key={`${stop.code}-${i}`} className={cn('hover:bg-muted/40', isCurrent && 'bg-primary/10 font-medium')}>
                       <td className="px-3 py-1.5 text-muted-foreground">{i + 1}</td>
                       <td className="px-3 py-1.5">
-                        {st?.name ?? code}
+                        {st?.name ?? stop.code}
                         {isCurrent && <span className="ml-2 text-[10px] font-semibold uppercase text-primary">current</span>}
                       </td>
-                      <td className="px-3 py-1.5 tabular-nums">{myTrain.route?.a[i]?.slice(0, 5) ?? '—'}</td>
-                      <td className="px-3 py-1.5 tabular-nums">{myTrain.route?.d[i]?.slice(0, 5) ?? '—'}</td>
-                      <td className="px-3 py-1.5 text-muted-foreground">{myTrain.route?.day?.[i] ?? 1}</td>
+                      <td className="px-3 py-1.5 tabular-nums">{stop.arr?.slice(0, 5) ?? '—'}</td>
+                      <td className="px-3 py-1.5 tabular-nums">{stop.dep?.slice(0, 5) ?? '—'}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{stop.day}</td>
                     </tr>
                   )
                 })}
+                {stops.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                      No stop-by-stop route data for this service — it runs {myTrain.start_time.slice(0, 5)}–{myTrain.end_time.slice(0, 5)} on{' '}
+                      {mySection?.name ?? 'its assigned section'}.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
