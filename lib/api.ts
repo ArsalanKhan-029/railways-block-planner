@@ -714,6 +714,22 @@ async function countHidden(): Promise<DemoModeState['hiddenCounts']> {
   return { trains: t.count ?? 0, blocks: b.count ?? 0, complaints: c.count ?? 0, assets: a.count ?? 0 }
 }
 
+/** The flag lives in the app_settings table so demo mode is GLOBAL — every
+ *  signed-in user sees the same state, not just the admin's browser. */
+async function writeDemoFlag(enabled: boolean): Promise<void> {
+  await supabase
+    .from('app_settings')
+    .upsert({ key: 'demo_mode', value: { enabled }, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+}
+
+export async function fetchDemoFlag(): Promise<boolean> {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'demo_mode').maybeSingle()
+  // fall back to the old localStorage flag so nothing regresses before the
+  // first admin toggle after this change
+  return Boolean((data?.value as { enabled?: boolean } | null)?.enabled) ||
+    localStorage.getItem('railmind-demo-mode') === 'on'
+}
+
 export async function enableDemoMode(): Promise<DemoModeState> {
   // flag every currently-visible row of each table
   await Promise.all([
@@ -722,7 +738,8 @@ export async function enableDemoMode(): Promise<DemoModeState> {
     supabase.from('complaints').update({ demo_hidden: true }).eq('demo_hidden', false),
     supabase.from('assets').update({ demo_hidden: true }).eq('demo_hidden', false),
   ])
-  localStorage.setItem('railmind-demo-mode', 'on')
+  await writeDemoFlag(true)
+  localStorage.setItem('railmind-demo-mode', 'on') // legacy mirror, ignored
   return { enabled: true, hiddenCounts: await countHidden() }
 }
 
@@ -733,12 +750,13 @@ export async function disableDemoMode(): Promise<DemoModeState> {
     supabase.from('complaints').update({ demo_hidden: false }).eq('demo_hidden', true),
     supabase.from('assets').update({ demo_hidden: false }).eq('demo_hidden', true),
   ])
-  localStorage.setItem('railmind-demo-mode', 'off')
+  await writeDemoFlag(false)
+  localStorage.setItem('railmind-demo-mode', 'off') // legacy mirror, ignored
   return { enabled: false, hiddenCounts: await countHidden() }
 }
 
 export async function getDemoModeState(): Promise<DemoModeState> {
-  return { enabled: localStorage.getItem('railmind-demo-mode') === 'on', hiddenCounts: await countHidden() }
+  return { enabled: await fetchDemoFlag(), hiddenCounts: await countHidden() }
 }
 
 /** Demo-Mode filter for normal views: hide flagged rows when enabled. */

@@ -16,6 +16,7 @@ import {
   fetchAssets,
   fetchBlocks,
   fetchComplaints,
+  fetchDemoFlag,
   fetchSections,
   fetchStations,
   fetchTrains,
@@ -95,20 +96,21 @@ export function RailDataProvider({ children }: { children: ReactNode }) {
       fetchUsers(),
       assetsP,
       stationsP,
-    ])
-      .then(([s, t, b, c, u, a, st]) => {
+    ])        .then(([s, t, b, c, u, a, st]) => {
         if (cancelled) return
-        const demo = localStorage.getItem('railmind-demo-mode') === 'on'
-        setSections(s)
-        setStations(st.rows)
-        setTrains(demoFilter(t, demo))
-        setBlocks(demoFilter(b, demo))
-        setComplaints(demoFilter(c, demo))
-        setUsers(u)
-        setAssets(demoFilter(a.rows, demo))
-        setAssetsAvailable(a.ok)
-        setDemoMode(demo)
-        setError(null)
+        fetchDemoFlag().then((demo) => {
+          if (cancelled) return
+          setSections(s)
+          setStations(st.rows)
+          setTrains(demoFilter(t, demo))
+          setBlocks(demoFilter(b, demo))
+          setComplaints(demoFilter(c, demo))
+          setUsers(u)
+          setAssets(demoFilter(a.rows, demo))
+          setAssetsAvailable(a.ok)
+          setDemoMode(demo)
+          setError(null)
+        })
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load data')
@@ -125,7 +127,7 @@ export function RailDataProvider({ children }: { children: ReactNode }) {
   const pending = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    const TABLES = ['sections', 'trains', 'blocks', 'complaints', 'assets', 'users']
+    const TABLES = ['sections', 'trains', 'blocks', 'complaints', 'assets', 'users', 'app_settings']
     const schedule = () => {
       pending.current = true
       if (timer.current) return
